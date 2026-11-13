@@ -1,0 +1,6 @@
+{
+  "name": "Ironclad Duel",
+  "description": "Real-time 1v1 multiplayer top-down tank combat arena with ricochet shells, destructible cover, and instant room-code matchmaking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
