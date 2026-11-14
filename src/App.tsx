@@ -24,6 +24,12 @@ import {
 import { ARENA_HEIGHT, ARENA_MAPS, ARENA_WIDTH } from './game/maps';
 import { ArenaVfx, renderArena } from './game/renderer';
 import { soundEngine } from './game/sound';
+import {
+  cleanPlayerName,
+  encodeSyncPlayerName,
+  parseHostFillBots,
+  parsePlayerReady,
+} from './game/sync';
 import type {
   BulletType,
   ClientMessage,
@@ -129,6 +135,11 @@ export default function App() {
   isSoloRef.current = isSoloMode;
   const localPlayerIdRef = useRef<PlayerId>(localPlayerId);
   localPlayerIdRef.current = localPlayerId;
+  const hostIdRef = useRef<PlayerId>(hostId);
+  hostIdRef.current = hostId;
+  const fillBotsRef = useRef<boolean>(fillBots);
+  fillBotsRef.current = fillBots;
+  const localReadyRef = useRef<boolean>(false);
   const roomPlayersRef = useRef<RoomPlayerInfo[]>(roomPlayers);
   roomPlayersRef.current = roomPlayers;
   const wsRef = useRef<WebSocket | null>(null);
@@ -171,9 +182,10 @@ export default function App() {
   }, []);
 
   const handleNameChange = useCallback((name: string) => {
-    setPlayerName(name);
+    const clean = cleanPlayerName(name);
+    setPlayerName(clean);
     try {
-      localStorage.setItem(STORAGE_NAME_KEY, name);
+      localStorage.setItem(STORAGE_NAME_KEY, clean);
     } catch {
       // ignore
     }
@@ -181,9 +193,15 @@ export default function App() {
       wsRef.current &&
       wsRef.current.readyState === WebSocket.OPEN &&
       screenRef.current === 'waiting' &&
-      name.trim().length > 0
+      clean.length > 0
     ) {
-      const msg: ClientMessage = { type: 'room:update_config', playerName: name };
+      const isHost = localPlayerIdRef.current === hostIdRef.current;
+      const syncName = encodeSyncPlayerName(
+        clean,
+        localReadyRef.current,
+        isHost ? fillBotsRef.current : false
+      );
+      const msg: ClientMessage = { type: 'room:update_config', playerName: syncName };
       wsRef.current.send(JSON.stringify(msg));
     }
   }, []);
@@ -292,18 +310,32 @@ export default function App() {
           setPendingInviteCode(null);
           setRoomCode(msg.roomCode);
           setLocalPlayerId(msg.playerId);
+          localPlayerIdRef.current = msg.playerId;
           setHostId(msg.hostId);
+          hostIdRef.current = msg.hostId;
           setSelectedFormat(msg.format);
           setSelectedMode(msg.mode);
           setSelectedMap(msg.mapSelection);
-          if (typeof msg.fillBots === 'boolean') {
-            setFillBots(msg.fillBots);
-          }
+
+          const hostSlot = msg.players.find((p) => p.id === msg.hostId);
+          const isCurrentHost = msg.playerId === msg.hostId;
+          const remoteFillBots = hostSlot
+            ? parseHostFillBots(hostSlot.name, msg.fillBots)
+            : fillBotsRef.current;
+          const activeFillBots = isCurrentHost ? fillBotsRef.current : remoteFillBots;
+          setFillBots(activeFillBots);
+          fillBotsRef.current = activeFillBots;
+
           setRoomPlayers(
-            msg.players.map((mp) => ({
-              ...mp,
-              ready: typeof mp.ready === 'boolean' ? mp.ready : false,
-            }))
+            msg.players.map((mp) => {
+              const isLocal = mp.id === msg.playerId;
+              const ready = isLocal ? localReadyRef.current : parsePlayerReady(mp.name, mp.ready);
+              return {
+                ...mp,
+                name: cleanPlayerName(mp.name),
+                ready,
+              };
+            })
           );
           setRematchVotes([]);
           setCountdownSeconds(null);
@@ -311,26 +343,28 @@ export default function App() {
           setScreen('waiting');
         } else if (msg.type === 'room:updated') {
           setHostId(msg.hostId);
+          hostIdRef.current = msg.hostId;
           setSelectedFormat(msg.format);
           setSelectedMode(msg.mode);
           setSelectedMap(msg.mapSelection);
-          if (typeof msg.fillBots === 'boolean') {
-            setFillBots(msg.fillBots);
-          }
-          setRoomPlayers((prev) =>
+
+          const hostSlot = msg.players.find((p) => p.id === msg.hostId);
+          const isCurrentHost = localPlayerIdRef.current === msg.hostId;
+          const remoteFillBots = hostSlot
+            ? parseHostFillBots(hostSlot.name, msg.fillBots)
+            : fillBotsRef.current;
+          const activeFillBots = isCurrentHost ? fillBotsRef.current : remoteFillBots;
+          setFillBots(activeFillBots);
+          fillBotsRef.current = activeFillBots;
+
+          setRoomPlayers(
             msg.players.map((mp) => {
-              const existing = prev.find((p) => p.id === mp.id);
-              let readyVal: boolean;
-              if (typeof mp.ready === 'boolean') {
-                readyVal = mp.ready;
-              } else if (existing && typeof existing.ready === 'boolean') {
-                readyVal = existing.ready;
-              } else {
-                readyVal = false;
-              }
+              const isLocal = mp.id === localPlayerIdRef.current;
+              const ready = isLocal ? localReadyRef.current : parsePlayerReady(mp.name, mp.ready);
               return {
                 ...mp,
-                ready: readyVal,
+                name: cleanPlayerName(mp.name),
+                ready,
               };
             })
           );
@@ -393,15 +427,18 @@ export default function App() {
 
   const handleHostRoom = useCallback(() => {
     soundEngine.unlock();
+    localReadyRef.current = false;
+    const clean = cleanPlayerName(playerName) || 'Commander 1';
+    const syncName = encodeSyncPlayerName(clean, false, fillBots);
     connectAndSend({
       type: 'room:create',
-      playerName: playerName.trim() || 'Commander 1',
+      playerName: syncName,
       loadout,
       format: selectedFormat,
       mode: selectedMode,
       mapSelection: selectedMap,
     });
-  }, [connectAndSend, loadout, playerName, selectedFormat, selectedMap, selectedMode]);
+  }, [connectAndSend, fillBots, loadout, playerName, selectedFormat, selectedMap, selectedMode]);
 
   const handleJoinRoom = useCallback(
     (explicitCode?: string, fromGesture = true) => {
@@ -413,10 +450,13 @@ export default function App() {
       if (fromGesture) {
         soundEngine.unlock();
       }
+      localReadyRef.current = false;
+      const clean = cleanPlayerName(playerName) || 'Commander';
+      const syncName = encodeSyncPlayerName(clean, false, false);
       connectAndSend({
         type: 'room:join',
         roomCode: code,
-        playerName: playerName.trim() || 'Commander',
+        playerName: syncName,
         loadout,
       });
     },
@@ -428,6 +468,7 @@ export default function App() {
     setPaused(false);
     setRematchVotes([]);
     setCountdownSeconds(null);
+    localReadyRef.current = false;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -491,9 +532,6 @@ export default function App() {
 
   useEffect(() => {
     if (screen !== 'waiting') return;
-    const localP = roomPlayers.find((p) => p.id === localPlayerId);
-    const isReady = Boolean(localP?.ready);
-    const allGuestsReady = roomPlayers.filter((p) => p.id !== hostId).every((p) => p.ready);
     const alphaCount = roomPlayers.filter((p) => p.teamId === 1).length;
     const bravoCount = roomPlayers.filter((p) => p.teamId === 2).length;
     const enoughPlayers = fillBots
@@ -502,10 +540,11 @@ export default function App() {
       ? alphaCount >= 1 && bravoCount >= 1
       : roomPlayers.length >= 2;
 
-    const shouldAutoStart = enoughPlayers && allGuestsReady && isReady;
+    const allPlayersReady = roomPlayers.length > 0 && roomPlayers.every((p) => p.ready);
+    const shouldAutoStart = enoughPlayers && allPlayersReady;
 
     if (!shouldAutoStart) {
-      if (countdownSeconds !== null && (fillBots || roomPlayers.length < 2)) {
+      if (countdownSeconds !== null) {
         setCountdownSeconds(null);
       }
       return;
@@ -515,7 +554,7 @@ export default function App() {
       setCountdownSeconds(3);
       soundEngine.playCountdownBeep(false);
     }
-  }, [screen, roomPlayers, localPlayerId, hostId, fillBots, selectedFormat, countdownSeconds]);
+  }, [screen, roomPlayers, fillBots, selectedFormat, countdownSeconds]);
 
   useEffect(() => {
     if (countdownSeconds === null || screen !== 'waiting') return;
@@ -941,8 +980,15 @@ export default function App() {
           }}
           onToggleFillBots={(fill) => {
             setFillBots(fill);
+            fillBotsRef.current = fill;
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              const msg: ClientMessage = { type: 'room:update_config', fillBots: fill };
+              const clean = cleanPlayerName(playerName);
+              const syncName = encodeSyncPlayerName(clean, localReadyRef.current, fill);
+              const msg: ClientMessage = {
+                type: 'room:update_config',
+                fillBots: fill,
+                playerName: syncName,
+              };
               wsRef.current.send(JSON.stringify(msg));
             }
           }}
@@ -955,11 +1001,20 @@ export default function App() {
           onToggleReady={(ready) => {
             soundEngine.unlock();
             soundEngine.playReadyToggle(ready);
+            localReadyRef.current = ready;
             setRoomPlayers((prev) =>
               prev.map((p) => (p.id === localPlayerId ? { ...p, ready } : p))
             );
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              const msg: ClientMessage = { type: 'room:update_config', ready };
+              const isHost = localPlayerId === hostId;
+              const clean = cleanPlayerName(playerName);
+              const syncName = encodeSyncPlayerName(clean, ready, isHost ? fillBots : false);
+              const msg: ClientMessage = {
+                type: 'room:update_config',
+                ready,
+                playerName: syncName,
+                ...(isHost ? { fillBots } : {}),
+              };
               wsRef.current.send(JSON.stringify(msg));
             }
           }}

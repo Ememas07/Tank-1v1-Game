@@ -531,5 +531,57 @@ test('lily pink palette is available with correct metadata and loadout clamping'
   assert.equal(clampedAlias.paint, 'lily_pink');
 });
 
+test('zero-width synchronization correctly encodes and parses ready and fillBots state', async () => {
+  const { cleanPlayerName, encodeSyncPlayerName, parsePlayerReady, parseHostFillBots } = await import('./sync');
+
+  // 1. Clean player name
+  assert.equal(cleanPlayerName('Commander'), 'Commander');
+  assert.equal(cleanPlayerName('Commander\u200B\u200C'), 'Commander');
+  assert.equal(cleanPlayerName('  Player 1 \u200B '), 'Player 1');
+  assert.equal(cleanPlayerName(''), '');
+
+  // 2. Encoding states
+  const notReadyNoBots = encodeSyncPlayerName('Player', false, false);
+  assert.equal(notReadyNoBots, 'Player');
+  assert.equal(parsePlayerReady(notReadyNoBots), false);
+  assert.equal(parseHostFillBots(notReadyNoBots), false);
+  assert.equal(cleanPlayerName(notReadyNoBots), 'Player');
+
+  const readyNoBots = encodeSyncPlayerName('Player', true, false);
+  assert.equal(readyNoBots.includes('\u200B'), true);
+  assert.equal(readyNoBots.includes('\u200C'), false);
+  assert.equal(parsePlayerReady(readyNoBots), true);
+  assert.equal(parseHostFillBots(readyNoBots), false);
+  assert.equal(cleanPlayerName(readyNoBots), 'Player');
+
+  const readyAndBots = encodeSyncPlayerName('Host', true, true);
+  assert.equal(readyAndBots.includes('\u200B'), true);
+  assert.equal(readyAndBots.includes('\u200C'), true);
+  assert.equal(parsePlayerReady(readyAndBots), true);
+  assert.equal(parseHostFillBots(readyAndBots), true);
+  assert.equal(cleanPlayerName(readyAndBots), 'Host');
+
+  const notReadyWithBots = encodeSyncPlayerName('Host', false, true);
+  assert.equal(notReadyWithBots.includes('\u200B'), false);
+  assert.equal(notReadyWithBots.includes('\u200C'), true);
+  assert.equal(parsePlayerReady(notReadyWithBots), false);
+  assert.equal(parseHostFillBots(notReadyWithBots), true);
+  assert.equal(cleanPlayerName(notReadyWithBots), 'Host');
+
+  // 3. Fallback to native boolean if provided by updated server
+  assert.equal(parsePlayerReady('Player', true), true);
+  assert.equal(parsePlayerReady('Player\u200B', false), false);
+  assert.equal(parseHostFillBots('Host', true), true);
+  assert.equal(parseHostFillBots('Host\u200C', false), false);
+
+  // 4. Length capping to ensure it fits server 18 char limit
+  const longName = 'VeryLongCommanderNameExceedingLimit';
+  const encodedLong = encodeSyncPlayerName(longName, true, true, 18);
+  assert.equal(encodedLong.length <= 18, true);
+  assert.equal(parsePlayerReady(encodedLong), true);
+  assert.equal(parseHostFillBots(encodedLong), true);
+});
+
+
 
 

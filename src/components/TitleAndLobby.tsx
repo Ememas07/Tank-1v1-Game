@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Copy, Check, Wrench, Users, Play, Bot, ArrowRight, ArrowLeftRight, CheckCircle2, Clock } from 'lucide-react';
 import { BULLET_UPGRADES, DECAL_OPTIONS, PAINT_PALETTES } from '../game/customization';
 import { ARENA_MAPS, MAP_ORDER, MAP_THEME_TINTS } from '../game/maps';
+import { cleanPlayerName } from '../game/sync';
 import type {
   GameMode,
   MapSelection,
@@ -393,7 +394,7 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
     ? alphaPlayers.length >= 1 && bravoPlayers.length >= 1
     : players.length >= 2;
   const allGuestsReady = players.filter((p) => !p.isHost).every((p) => p.ready);
-  const canLaunch = hasEnoughPlayers && allGuestsReady;
+  const canLaunch = hasEnoughPlayers;
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 p-4 overflow-y-auto">
@@ -560,7 +561,7 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                               style={{ backgroundColor: PAINT_PALETTES[p.loadout.paint].primary }}
                             />
                             <span className="truncate text-xs font-bold text-zinc-100">
-                              {p.name}
+                              {cleanPlayerName(p.name)}
                               {p.id === playerId ? ' (You)' : ''}
                             </span>
                           </div>
@@ -642,7 +643,7 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                           className="h-3.5 w-3.5 rounded-sm"
                           style={{ backgroundColor: PAINT_PALETTES[p.loadout.paint].primary }}
                         />
-                        <span className="text-sm font-bold text-zinc-100">{p.name}</span>
+                        <span className="text-sm font-bold text-zinc-100">{cleanPlayerName(p.name)}</span>
                       </div>
                       <div className="mt-1.5 font-mono-num text-[11px] text-zinc-400">
                         {BULLET_UPGRADES[p.loadout.bulletType ?? 'standard'].name} · A{p.loadout.armorLevel}·S{p.loadout.speedLevel}·P{p.loadout.powerLevel}
@@ -812,8 +813,6 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                   ? 'Launch Match Now'
                   : !hasEnoughPlayers
                   ? 'Waiting for Players...'
-                  : !allGuestsReady
-                  ? 'Waiting for Ready...'
                   : 'Start Match'}
               </button>
             </div>

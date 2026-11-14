@@ -261,10 +261,11 @@ export function createMatchState(opts: CreateMatchOptions): GameSnapshot {
     teamSlotCount[teamId] = teamIdx + 1;
 
     const { pos, facing } = getSpawnForTank(format, setup.id, teamId, teamIdx, map);
+    const cleanName = (setup.name || '').replace(/[\u200B\u200C]/g, '').trim() || `Commander ${setup.id}`;
     tanks[setup.id] = createTank(
       setup.id,
       teamId,
-      setup.name || `Commander ${setup.id}`,
+      cleanName,
       pos,
       facing,
       setup.loadout,
