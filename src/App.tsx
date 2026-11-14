@@ -938,6 +938,12 @@ export default function App() {
                 <Home className="h-4 w-4" />
                 Leave Match
               </button>
+              <a
+                href="/"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/80 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              >
+                Exit to AI Studio Hub
+              </a>
             </div>
           </div>
         </div>

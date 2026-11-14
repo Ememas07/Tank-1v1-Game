@@ -85,7 +85,14 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   return (
     <div className="fixed inset-0 z-20 flex flex-col items-center justify-between bg-gradient-to-b from-black/75 via-black/45 to-black/80 px-4 py-5 overflow-y-auto">
       {/* Bespoke SVG Emblem */}
-      <div className="flex flex-col items-center pt-1 text-center">
+      <a
+        href="/"
+        title="Return to Hub"
+        className="flex flex-col items-center pt-1 text-center group cursor-pointer"
+      >
+        <span className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-400 group-hover:text-amber-400 transition-colors">
+          <span aria-hidden="true">←</span> Return to Hub
+        </span>
         <svg
           viewBox="0 0 360 74"
           className="h-14 w-auto drop-shadow-[0_4px_16px_rgba(0,0,0,0.85)]"
@@ -118,7 +125,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             IRONCLAD DUEL
           </text>
         </svg>
-      </div>
+      </a>
 
       {/* Main Command Panel */}
       <main className="w-full max-w-xl rounded-xl border border-zinc-700/90 bg-[#161921]/95 p-5 sm:p-6 shadow-2xl">
