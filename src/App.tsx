@@ -296,8 +296,15 @@ export default function App() {
           setSelectedFormat(msg.format);
           setSelectedMode(msg.mode);
           setSelectedMap(msg.mapSelection);
-          setFillBots(msg.fillBots);
-          setRoomPlayers(msg.players);
+          if (typeof msg.fillBots === 'boolean') {
+            setFillBots(msg.fillBots);
+          }
+          setRoomPlayers(
+            msg.players.map((mp) => ({
+              ...mp,
+              ready: typeof mp.ready === 'boolean' ? mp.ready : false,
+            }))
+          );
           setRematchVotes([]);
           setCountdownSeconds(null);
           setErrorMsg(null);
@@ -307,8 +314,26 @@ export default function App() {
           setSelectedFormat(msg.format);
           setSelectedMode(msg.mode);
           setSelectedMap(msg.mapSelection);
-          setFillBots(msg.fillBots);
-          setRoomPlayers(msg.players);
+          if (typeof msg.fillBots === 'boolean') {
+            setFillBots(msg.fillBots);
+          }
+          setRoomPlayers((prev) =>
+            msg.players.map((mp) => {
+              const existing = prev.find((p) => p.id === mp.id);
+              let readyVal: boolean;
+              if (typeof mp.ready === 'boolean') {
+                readyVal = mp.ready;
+              } else if (existing && typeof existing.ready === 'boolean') {
+                readyVal = existing.ready;
+              } else {
+                readyVal = false;
+              }
+              return {
+                ...mp,
+                ready: readyVal,
+              };
+            })
+          );
           if (msg.countdown !== undefined) {
             setCountdownSeconds(msg.countdown);
           }
@@ -318,6 +343,10 @@ export default function App() {
         } else if (msg.type === 'room:countdown_cancelled') {
           setCountdownSeconds(null);
         } else if (msg.type === 'room:error') {
+          if (fillBots && msg.message === 'Waiting for more players to join.') {
+            startSoloSkirmish(selectedFormat, selectedMode, false, selectedMap, loadout);
+            return;
+          }
           setErrorMsg(msg.message);
         } else if (msg.type === 'room:opponent_left') {
           clearInputs();
@@ -459,6 +488,62 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (screen !== 'waiting') return;
+    const localP = roomPlayers.find((p) => p.id === localPlayerId);
+    const isReady = Boolean(localP?.ready);
+    const allGuestsReady = roomPlayers.filter((p) => p.id !== hostId).every((p) => p.ready);
+    const alphaCount = roomPlayers.filter((p) => p.teamId === 1).length;
+    const bravoCount = roomPlayers.filter((p) => p.teamId === 2).length;
+    const enoughPlayers = fillBots
+      ? roomPlayers.length >= 1
+      : selectedFormat === '2v2'
+      ? alphaCount >= 1 && bravoCount >= 1
+      : roomPlayers.length >= 2;
+
+    const shouldAutoStart = enoughPlayers && allGuestsReady && isReady;
+
+    if (!shouldAutoStart) {
+      if (countdownSeconds !== null && (fillBots || roomPlayers.length < 2)) {
+        setCountdownSeconds(null);
+      }
+      return;
+    }
+
+    if (countdownSeconds === null) {
+      setCountdownSeconds(3);
+      soundEngine.playCountdownBeep(false);
+    }
+  }, [screen, roomPlayers, localPlayerId, hostId, fillBots, selectedFormat, countdownSeconds]);
+
+  useEffect(() => {
+    if (countdownSeconds === null || screen !== 'waiting') return;
+    if (countdownSeconds > 1) {
+      const timer = setTimeout(() => {
+        setCountdownSeconds((prev) => {
+          if (prev === null || prev <= 1) return prev;
+          const next = prev - 1;
+          soundEngine.playCountdownBeep(next === 1);
+          return next;
+        });
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+    if (countdownSeconds === 1) {
+      const timer = setTimeout(() => {
+        setCountdownSeconds(null);
+        if (localPlayerId === hostId) {
+          if (fillBots && roomPlayers.length === 1) {
+            startSoloSkirmish(selectedFormat, selectedMode, false, selectedMap, loadout);
+          } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'room:start_match' }));
+          }
+        }
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [countdownSeconds, screen, localPlayerId, hostId, fillBots, roomPlayers.length, selectedFormat, selectedMode, selectedMap, loadout, startSoloSkirmish]);
 
   const screenToWorld = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -881,6 +966,11 @@ export default function App() {
           onOpenGarage={() => setGarageOpen(true)}
           onStartMatch={() => {
             soundEngine.unlock();
+            setCountdownSeconds(null);
+            if (fillBots && roomPlayers.length === 1) {
+              startSoloSkirmish(selectedFormat, selectedMode, false, selectedMap, loadout);
+              return;
+            }
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               const msg: ClientMessage = { type: 'room:start_match' };
               wsRef.current.send(JSON.stringify(msg));

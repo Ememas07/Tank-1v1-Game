@@ -488,7 +488,7 @@ async function startServer() {
               loadout,
               ws,
               input: createEmptyInput(0),
-              ready: true,
+              ready: false,
             },
           },
           botIds: new Set<PlayerId>(),
