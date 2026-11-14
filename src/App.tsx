@@ -329,7 +329,9 @@ export default function App() {
           setRoomPlayers(
             msg.players.map((mp) => {
               const isLocal = mp.id === msg.playerId;
-              const ready = isLocal ? localReadyRef.current : parsePlayerReady(mp.name, mp.ready);
+              const ready = isLocal
+                ? localReadyRef.current || parsePlayerReady(mp.name, mp.ready)
+                : parsePlayerReady(mp.name, mp.ready);
               return {
                 ...mp,
                 name: cleanPlayerName(mp.name),
@@ -360,7 +362,9 @@ export default function App() {
           setRoomPlayers(
             msg.players.map((mp) => {
               const isLocal = mp.id === localPlayerIdRef.current;
-              const ready = isLocal ? localReadyRef.current : parsePlayerReady(mp.name, mp.ready);
+              const ready = isLocal
+                ? localReadyRef.current || parsePlayerReady(mp.name, mp.ready)
+                : parsePlayerReady(mp.name, mp.ready);
               return {
                 ...mp,
                 name: cleanPlayerName(mp.name),
@@ -537,8 +541,8 @@ export default function App() {
     const enoughPlayers = fillBots
       ? roomPlayers.length >= 1
       : selectedFormat === '2v2'
-      ? alphaCount >= 1 && bravoCount >= 1
-      : roomPlayers.length >= 2;
+        ? alphaCount >= 1 && bravoCount >= 1
+        : roomPlayers.length >= 2;
 
     const allPlayersReady = roomPlayers.length > 0 && roomPlayers.every((p) => p.ready);
     const shouldAutoStart = enoughPlayers && allPlayersReady;
@@ -982,7 +986,8 @@ export default function App() {
             setFillBots(fill);
             fillBotsRef.current = fill;
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              const clean = cleanPlayerName(playerName);
+              const localP = roomPlayers.find((p) => p.id === localPlayerId);
+              const clean = cleanPlayerName(localP?.name || playerName);
               const syncName = encodeSyncPlayerName(clean, localReadyRef.current, fill);
               const msg: ClientMessage = {
                 type: 'room:update_config',
@@ -1007,7 +1012,8 @@ export default function App() {
             );
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               const isHost = localPlayerId === hostId;
-              const clean = cleanPlayerName(playerName);
+              const localP = roomPlayers.find((p) => p.id === localPlayerId);
+              const clean = cleanPlayerName(localP?.name || playerName);
               const syncName = encodeSyncPlayerName(clean, ready, isHost ? fillBots : false);
               const msg: ClientMessage = {
                 type: 'room:update_config',
@@ -1134,9 +1140,8 @@ export default function App() {
             </div>
             <h2
               id="gameover-heading"
-              className={`mt-1 font-display text-4xl font-extrabold tracking-wide ${
-                didLocalWin ? 'text-amber-400' : 'text-red-400'
-              }`}
+              className={`mt-1 font-display text-4xl font-extrabold tracking-wide ${didLocalWin ? 'text-amber-400' : 'text-red-400'
+                }`}
             >
               {didLocalWin ? 'VICTORY' : 'DEFEAT'}
             </h2>
@@ -1210,9 +1215,8 @@ export default function App() {
                       return (
                         <span
                           key={rp.id}
-                          className={`inline-flex items-center gap-1 text-[11px] font-medium ${
-                            voted ? 'text-emerald-400' : 'text-zinc-500'
-                          }`}
+                          className={`inline-flex items-center gap-1 text-[11px] font-medium ${voted ? 'text-emerald-400' : 'text-zinc-500'
+                            }`}
                         >
                           <CheckCircle2 className="h-3 w-3" />
                           {rp.name}
@@ -1231,18 +1235,17 @@ export default function App() {
                 data-start="true"
                 data-testid="rematch-btn"
                 onClick={handleRematch}
-                className={`inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors ${
-                  !isSoloMode && hasVotedRematch
+                className={`inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors ${!isSoloMode && hasVotedRematch
                     ? 'border border-emerald-500 bg-emerald-600/25 text-emerald-200 hover:bg-emerald-600/35'
                     : 'bg-amber-600 text-white hover:bg-amber-500'
-                }`}
+                  }`}
               >
                 <RotateCcw className="h-4 w-4" />
                 {isSoloMode
                   ? 'Play Again'
                   : hasVotedRematch
-                  ? 'Confirmed ✓ (Cancel)'
-                  : 'Confirm Rematch'}
+                    ? 'Confirmed ✓ (Cancel)'
+                    : 'Confirm Rematch'}
               </button>
               <button
                 type="button"

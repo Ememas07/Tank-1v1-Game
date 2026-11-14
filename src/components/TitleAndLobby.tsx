@@ -412,6 +412,9 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
               >
                 {roomCode}
               </span>
+              <span className="rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 text-[10px] font-bold font-mono">
+                v1.2.6 · LIVE SYNC
+              </span>
               <button
                 type="button"
                 onClick={() => copyText(roomCode, 'code')}
