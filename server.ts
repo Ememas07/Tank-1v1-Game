@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { clampLoadout, DEFAULT_P1_LOADOUT, DEFAULT_P2_LOADOUT } from './src/game/customization';
-import { createEmptyInput, createMatchState, stepSimulation } from './src/game/engine';
+import { computeBotInput, createEmptyInput, createMatchState, stepSimulation } from './src/game/engine';
 import { ARENA_MAPS } from './src/game/maps';
 import type {
   ClientMessage,
@@ -31,6 +31,7 @@ interface PlayerSlot {
   loadout: TankLoadout;
   ws: WebSocket | null;
   input: PlayerInput;
+  ready: boolean;
 }
 
 interface GameRoom {
@@ -38,9 +39,12 @@ interface GameRoom {
   format: MatchFormat;
   mode: GameMode;
   mapSelection: MapSelection;
+  fillBots: boolean;
   hostId: PlayerId;
   status: 'waiting' | 'playing';
   players: Partial<Record<PlayerId, PlayerSlot>>;
+  botIds: Set<PlayerId>;
+  rematchVotes: Set<PlayerId>;
   snapshot: GameSnapshot | null;
   tickInterval: NodeJS.Timeout | null;
   tickCount: number;
@@ -86,6 +90,7 @@ function getRoomPlayersList(room: GameRoom): RoomPlayerInfo[] {
     loadout: slot.loadout,
     connected: Boolean(slot.ws && slot.ws.readyState === WebSocket.OPEN),
     isHost: slot.id === room.hostId,
+    ready: slot.id === room.hostId ? true : slot.ready,
   }));
 }
 
@@ -150,13 +155,60 @@ function rebalanceTeamsForFormat(room: GameRoom): void {
   });
 }
 
+const BOT_LOADOUTS: Record<PlayerId, TankLoadout> = {
+  1: DEFAULT_P1_LOADOUT,
+  2: DEFAULT_P2_LOADOUT,
+  3: { paint: 'olive', decal: 'star', armorLevel: 2, speedLevel: 1, powerLevel: 2, bulletType: 'ricochet' },
+  4: { paint: 'ochre', decal: 'hazard', armorLevel: 1, speedLevel: 3, powerLevel: 1, bulletType: 'twin' },
+};
+
 function startRoomMatch(room: GameRoom): void {
   stopRoomLoop(room);
   const slots = getConnectedSlots(room);
-  if (slots.length < 2) return;
+  const maxPlayers = room.format === '1v1' ? 2 : 4;
+  if (!room.fillBots && slots.length < 2) return;
+  if (slots.length < 1) return;
+
+  room.rematchVotes.clear();
+  room.botIds.clear();
 
   for (const slot of slots) {
     slot.input = createEmptyInput(slot.teamId === 1 || slot.id === 1 || slot.id === 3 ? 0 : Math.PI);
+    slot.ready = slot.id === room.hostId;
+  }
+
+  const matchPlayers: Array<{ id: PlayerId; teamId: TeamId; name: string; loadout: TankLoadout }> =
+    slots.map((s) => ({
+      id: s.id,
+      teamId: s.teamId,
+      name: s.name,
+      loadout: s.loadout,
+    }));
+
+  if (room.fillBots) {
+    let t1Count = matchPlayers.filter((p) => p.teamId === 1).length;
+    let t2Count = matchPlayers.filter((p) => p.teamId === 2).length;
+    for (const slotId of ALL_SLOTS.slice(0, maxPlayers)) {
+      if (room.players[slotId]) continue;
+      let botTeam: TeamId;
+      if (room.format === 'ffa') {
+        botTeam = slotId;
+      } else if (room.format === '1v1') {
+        botTeam = t1Count === 0 ? 1 : 2;
+      } else {
+        botTeam = t1Count <= t2Count ? 1 : 2;
+      }
+      if (botTeam === 1) t1Count++;
+      else if (botTeam === 2) t2Count++;
+
+      room.botIds.add(slotId);
+      matchPlayers.push({
+        id: slotId,
+        teamId: botTeam,
+        name: maxPlayers === 2 ? 'Sentinel Bot' : `Bot ${slotId}`,
+        loadout: BOT_LOADOUTS[slotId],
+      });
+    }
   }
 
   room.status = 'playing';
@@ -166,12 +218,7 @@ function startRoomMatch(room: GameRoom): void {
     format: room.format,
     mode: room.mode,
     mapSelection: room.mapSelection,
-    players: slots.map((s) => ({
-      id: s.id,
-      teamId: s.teamId,
-      name: s.name,
-      loadout: s.loadout,
-    })),
+    players: matchPlayers,
   });
 
   broadcastRoom(room, {
@@ -187,7 +234,11 @@ function startRoomMatch(room: GameRoom): void {
 
     const inputs: Partial<Record<PlayerId, PlayerInput>> = {};
     for (const id of room.snapshot.activePlayerIds) {
-      inputs[id] = room.players[id]?.input ?? createEmptyInput(0);
+      if (room.botIds.has(id)) {
+        inputs[id] = computeBotInput(room.snapshot, id, true);
+      } else {
+        inputs[id] = room.players[id]?.input ?? createEmptyInput(0);
+      }
     }
 
     const events = stepSimulation(room.snapshot, inputs, rawDt);
@@ -217,6 +268,8 @@ function handleDisconnect(ws: WebSocket): void {
     delete room.players[mapping.playerId];
   }
 
+  room.rematchVotes.delete(mapping.playerId);
+
   const remaining = getConnectedSlots(room);
   if (remaining.length === 0) {
     stopRoomLoop(room);
@@ -227,31 +280,48 @@ function handleDisconnect(ws: WebSocket): void {
   // Reassign host if needed
   if (!room.players[room.hostId]) {
     room.hostId = remaining[0].id;
+    remaining[0].ready = true;
   }
 
-  // If match was in progress and fewer than 2 players remain (or one team is empty in 1v1/2v2), return to staging room
+  // If match was in progress and insufficient participants remain, return to staging room
+  const totalWithBots = remaining.length + room.botIds.size;
   const shouldStopMatch =
     room.status === 'playing' &&
-    (remaining.length < 2 ||
-      (room.format !== 'ffa' &&
+    (totalWithBots < 2 ||
+      (!room.fillBots &&
+        room.format !== 'ffa' &&
         (!remaining.some((s) => s.teamId === 1) || !remaining.some((s) => s.teamId === 2))));
 
   if (shouldStopMatch) {
     stopRoomLoop(room);
     room.status = 'waiting';
     room.snapshot = null;
+    room.botIds.clear();
+    room.rematchVotes.clear();
     for (const rem of remaining) {
+      rem.ready = rem.id === room.hostId;
       sendJson(rem.ws, {
         type: 'room:opponent_left',
         message: 'A player disconnected. Match paused in staging room.',
       });
     }
   } else if (room.status === 'playing' && room.snapshot) {
-    // In 4-player FFA / 2v2 when 2+ teams remain, mark disconnected tank dead so match continues smoothly
+    // In 4-player FFA / 2v2 / bot matches when 2+ teams remain, mark disconnected tank dead so match continues smoothly
     const lostTank = room.snapshot.tanks[mapping.playerId];
     if (lostTank) {
       lostTank.alive = false;
       lostTank.hp = 0;
+    }
+    if (room.snapshot.phase === 'gameover') {
+      if (remaining.length >= 1 && remaining.every((s) => room.rematchVotes.has(s.id))) {
+        startRoomMatch(room);
+        return;
+      }
+      broadcastRoom(room, {
+        type: 'game:rematch_status',
+        votedPlayerIds: Array.from(room.rematchVotes),
+        totalPlayers: remaining.length,
+      });
     }
   }
 
@@ -262,6 +332,7 @@ function handleDisconnect(ws: WebSocket): void {
     format: room.format,
     mode: room.mode,
     mapSelection: room.mapSelection,
+    fillBots: room.fillBots,
     players: getRoomPlayersList(room),
     status: room.status,
   });
@@ -320,6 +391,7 @@ async function startServer() {
           format,
           mode,
           mapSelection,
+          fillBots: false,
           hostId: 1,
           status: 'waiting',
           players: {
@@ -330,8 +402,11 @@ async function startServer() {
               loadout,
               ws,
               input: createEmptyInput(0),
+              ready: true,
             },
           },
+          botIds: new Set<PlayerId>(),
+          rematchVotes: new Set<PlayerId>(),
           snapshot: null,
           tickInterval: null,
           tickCount: 0,
@@ -347,6 +422,7 @@ async function startServer() {
           format: room.format,
           mode: room.mode,
           mapSelection: room.mapSelection,
+          fillBots: room.fillBots,
           players: getRoomPlayersList(room),
         });
         return;
@@ -358,6 +434,10 @@ async function startServer() {
         const room = rooms.get(code);
         if (!room) {
           sendJson(ws, { type: 'room:error', message: `Room "${code}" not found.` });
+          return;
+        }
+        if (room.status !== 'waiting') {
+          sendJson(ws, { type: 'room:error', message: `Match is already in progress in room "${code}".` });
           return;
         }
         const maxPlayers = room.format === '1v1' ? 2 : 4;
@@ -392,6 +472,7 @@ async function startServer() {
           loadout,
           ws,
           input: createEmptyInput(assignTeam === 1 ? 0 : Math.PI),
+          ready: false,
         };
         clientRoomMap.set(ws, { roomCode: code, playerId: openSlot });
 
@@ -403,6 +484,7 @@ async function startServer() {
           format: room.format,
           mode: room.mode,
           mapSelection: room.mapSelection,
+          fillBots: room.fillBots,
           players: getRoomPlayersList(room),
         });
 
@@ -413,6 +495,7 @@ async function startServer() {
           format: room.format,
           mode: room.mode,
           mapSelection: room.mapSelection,
+          fillBots: room.fillBots,
           players: getRoomPlayersList(room),
           status: room.status,
         });
@@ -436,6 +519,9 @@ async function startServer() {
         }
         if (msg.playerName) {
           slot.name = msg.playerName.trim().slice(0, 18) || slot.name;
+        }
+        if (typeof msg.ready === 'boolean') {
+          slot.ready = mapping.playerId === room.hostId ? true : msg.ready;
         }
         if (msg.teamId && room.format === '2v2') {
           const targetTeam = msg.teamId === 1 ? 1 : 2;
@@ -464,6 +550,9 @@ async function startServer() {
         if (msg.mapSelection !== undefined && mapping.playerId === room.hostId) {
           room.mapSelection = sanitizeMapSelection(msg.mapSelection);
         }
+        if (typeof msg.fillBots === 'boolean' && mapping.playerId === room.hostId) {
+          room.fillBots = msg.fillBots;
+        }
         broadcastRoom(room, {
           type: 'room:updated',
           roomCode: room.code,
@@ -471,6 +560,7 @@ async function startServer() {
           format: room.format,
           mode: room.mode,
           mapSelection: room.mapSelection,
+          fillBots: room.fillBots,
           players: getRoomPlayersList(room),
           status: room.status,
         });
@@ -480,11 +570,11 @@ async function startServer() {
       if (msg.type === 'room:start_match') {
         if (mapping.playerId !== room.hostId) return;
         const slots = getConnectedSlots(room);
-        if (slots.length < 2) {
+        if (!room.fillBots && slots.length < 2) {
           sendJson(ws, { type: 'room:error', message: 'Waiting for more players to join.' });
           return;
         }
-        if (room.format === '2v2') {
+        if (!room.fillBots && room.format === '2v2') {
           const counts = getTeamCounts(room);
           if (counts[1] === 0 || counts[2] === 0) {
             sendJson(ws, {
@@ -493,6 +583,11 @@ async function startServer() {
             });
             return;
           }
+        }
+        const allGuestsReady = slots.every((s) => s.id === room.hostId || s.ready);
+        if (!allGuestsReady) {
+          sendJson(ws, { type: 'room:error', message: 'Waiting for all players to ready up.' });
+          return;
         }
         startRoomMatch(room);
         return;
@@ -513,10 +608,31 @@ async function startServer() {
       }
 
       if (msg.type === 'game:rematch') {
+        if (room.status !== 'playing' || room.snapshot?.phase !== 'gameover') return;
         const slots = getConnectedSlots(room);
-        if (slots.length >= 2) {
+        if (slots.length < 1) return;
+        room.rematchVotes.add(mapping.playerId);
+        if (slots.every((s) => room.rematchVotes.has(s.id))) {
           startRoomMatch(room);
+        } else {
+          broadcastRoom(room, {
+            type: 'game:rematch_status',
+            votedPlayerIds: Array.from(room.rematchVotes),
+            totalPlayers: slots.length,
+          });
         }
+        return;
+      }
+
+      if (msg.type === 'game:rematch_cancel') {
+        if (room.status !== 'playing' || room.snapshot?.phase !== 'gameover') return;
+        const slots = getConnectedSlots(room);
+        room.rematchVotes.delete(mapping.playerId);
+        broadcastRoom(room, {
+          type: 'game:rematch_status',
+          votedPlayerIds: Array.from(room.rematchVotes),
+          totalPlayers: slots.length,
+        });
       }
     });
 

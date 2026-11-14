@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Copy, Check, Wrench, Users, Play, Bot, ArrowRight, ArrowLeftRight } from 'lucide-react';
-import { BULLET_UPGRADES, PAINT_PALETTES } from '../game/customization';
+import { Copy, Check, Wrench, Users, Play, Bot, ArrowRight, ArrowLeftRight, CheckCircle2, Clock } from 'lucide-react';
+import { BULLET_UPGRADES, DECAL_OPTIONS, PAINT_PALETTES } from '../game/customization';
 import { ARENA_MAPS, MAP_ORDER, MAP_THEME_TINTS } from '../game/maps';
 import type {
   GameMode,
@@ -312,12 +312,17 @@ interface WaitingLobbyProps {
   format: MatchFormat;
   mode: GameMode;
   mapSelection: MapSelection;
+  fillBots: boolean;
   players: RoomPlayerInfo[];
+  playerName: string;
+  onUpdatePlayerName: (name: string) => void;
   errorMsg: string | null;
   onChangeFormat: (format: MatchFormat) => void;
   onChangeMode: (mode: GameMode) => void;
   onChangeMap: (map: MapSelection) => void;
+  onToggleFillBots: (fill: boolean) => void;
   onSwitchTeam: (teamId: 1 | 2) => void;
+  onToggleReady: (ready: boolean) => void;
   onOpenGarage: () => void;
   onStartMatch: () => void;
   onLeaveRoom: () => void;
@@ -330,12 +335,17 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
   format,
   mode,
   mapSelection,
+  fillBots,
   players,
+  playerName,
+  onUpdatePlayerName,
   errorMsg,
   onChangeFormat,
   onChangeMode,
   onChangeMap,
+  onToggleFillBots,
   onSwitchTeam,
+  onToggleReady,
   onOpenGarage,
   onStartMatch,
   onLeaveRoom,
@@ -363,13 +373,17 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
   };
 
   const localPlayer = players.find((p) => p.id === playerId);
+  const isLocalReady = Boolean(localPlayer?.ready);
   const alphaPlayers = players.filter((p) => p.teamId === 1);
   const bravoPlayers = players.filter((p) => p.teamId === 2);
 
-  const canLaunch =
-    format === '2v2'
-      ? alphaPlayers.length >= 1 && bravoPlayers.length >= 1
-      : players.length >= 2;
+  const hasEnoughPlayers = fillBots
+    ? players.length >= 1
+    : format === '2v2'
+    ? alphaPlayers.length >= 1 && bravoPlayers.length >= 1
+    : players.length >= 2;
+  const allGuestsReady = players.filter((p) => !p.isHost).every((p) => p.ready);
+  const canLaunch = hasEnoughPlayers && allGuestsReady;
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 p-4 overflow-y-auto">
@@ -405,6 +419,30 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
           >
             {copiedLink ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
             {copiedLink ? 'Invite Link Copied' : 'Copy Friend Invite Link'}
+          </button>
+        </div>
+
+        {/* Local Callsign Quick-Edit */}
+        <div className="mt-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-lg border border-zinc-800 bg-[#111318] px-3.5 py-2.5">
+          <label htmlFor="lobby-callsign-input" className="text-xs font-semibold text-zinc-400 whitespace-nowrap">
+            Your Callsign
+          </label>
+          <input
+            id="lobby-callsign-input"
+            type="text"
+            maxLength={18}
+            value={playerName}
+            onChange={(e) => onUpdatePlayerName(e.target.value)}
+            placeholder="Commander"
+            className="flex-1 rounded border border-zinc-700 bg-[#161921] px-2.5 py-1 text-xs font-semibold text-zinc-100 placeholder-zinc-500 focus:border-amber-500 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={onOpenGarage}
+            className="inline-flex items-center justify-center gap-1.5 rounded border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100 hover:border-amber-500 whitespace-nowrap"
+          >
+            <Wrench className="h-3.5 w-3.5 text-amber-400" />
+            Customize Tank
           </button>
         </div>
 
@@ -446,6 +484,20 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                     {[0, 1].map((idx) => {
                       const p = team.list[idx];
                       if (!p) {
+                        if (fillBots) {
+                          return (
+                            <div
+                              key={`bot-${team.teamId}-${idx}`}
+                              className="flex items-center justify-between gap-2 rounded border border-dashed border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs"
+                            >
+                              <span className="inline-flex items-center gap-1.5 font-semibold text-amber-300">
+                                <Bot className="h-3.5 w-3.5" />
+                                Sentinel Bot (AI)
+                              </span>
+                              <span className="text-[10px] font-bold uppercase text-emerald-400">Ready</span>
+                            </div>
+                          );
+                        }
                         return (
                           <div
                             key={`empty-${team.teamId}-${idx}`}
@@ -458,7 +510,7 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                       return (
                         <div
                           key={`player-${p.id}`}
-                          className="flex items-center justify-between rounded border border-zinc-800 bg-[#161921] px-3 py-2"
+                          className="flex items-center justify-between gap-2 rounded border border-zinc-800 bg-[#161921] px-3 py-2"
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             <span
@@ -470,9 +522,22 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                               {p.id === playerId ? ' (You)' : ''}
                             </span>
                           </div>
-                          <span className="font-mono-num text-[10px] text-zinc-400 shrink-0">
-                            {BULLET_UPGRADES[p.loadout.bulletType ?? 'standard'].shortCode} · A{p.loadout.armorLevel}·S{p.loadout.speedLevel}·P{p.loadout.powerLevel}
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="font-mono-num text-[10px] text-zinc-400">
+                              {BULLET_UPGRADES[p.loadout.bulletType ?? 'standard'].shortCode} · A{p.loadout.armorLevel}·S{p.loadout.speedLevel}·P{p.loadout.powerLevel}
+                            </span>
+                            {p.isHost ? (
+                              <span className="text-[10px] font-bold uppercase text-amber-400">Host</span>
+                            ) : (
+                              <span
+                                className={`text-[10px] font-bold uppercase ${
+                                  p.ready ? 'text-emerald-400' : 'text-zinc-500'
+                                }`}
+                              >
+                                {p.ready ? 'Ready' : 'Not Ready'}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -496,11 +561,32 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                       : 'border-dashed border-zinc-700/70 bg-[#111318]/50'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-zinc-400">
-                      Commander {slotNum} {p?.isHost ? '· Host' : ''}
+                      Commander {slotNum} {p?.isHost ? '· Host' : ''} {isYou ? '· You' : ''}
                     </span>
-                    {isYou && <span className="text-[11px] font-semibold text-amber-400">You</span>}
+                    {p && !p.isHost && (
+                      <span
+                        className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase ${
+                          p.ready ? 'text-emerald-400' : 'text-zinc-400'
+                        }`}
+                      >
+                        {p.ready ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Ready
+                          </>
+                        ) : (
+                          <>
+                            <Clock className="h-3.5 w-3.5" />
+                            Not Ready
+                          </>
+                        )}
+                      </span>
+                    )}
+                    {p?.isHost && (
+                      <span className="text-[11px] font-bold uppercase text-amber-400">Host</span>
+                    )}
                   </div>
                   {p ? (
                     <div className="mt-2">
@@ -516,8 +602,20 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="mt-2.5 text-xs text-zinc-500">
-                      Waiting for player to join via invite link...
+                    <div className="mt-2.5 text-xs">
+                      {fillBots ? (
+                        <div className="flex items-center justify-between gap-2 text-amber-300 font-semibold">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Bot className="h-3.5 w-3.5" />
+                            {maxPlayers === 2 ? 'Sentinel Bot' : `Bot ${slotNum}`} (AI)
+                          </span>
+                          <span className="text-[10px] font-bold uppercase text-emerald-400">Ready</span>
+                        </div>
+                      ) : (
+                        <span className="text-zinc-500">
+                          Waiting for player to join via invite link...
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -600,6 +698,30 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
           </div>
         </div>
 
+        {/* Bot Fill Option */}
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-[#111318] px-3.5 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Bot className="h-4 w-4 shrink-0 text-amber-400" />
+            <span className="text-xs font-medium text-zinc-300">
+              Fill empty slots with AI bots {!isHost ? '(Host setting)' : ''}
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={!isHost}
+            data-testid="fill-bots-toggle"
+            aria-pressed={fillBots}
+            onClick={() => onToggleFillBots(!fillBots)}
+            className={`rounded-md border px-3 py-1 text-xs font-bold transition-colors shrink-0 ${
+              fillBots
+                ? 'border-amber-500 bg-amber-500/20 text-amber-300'
+                : 'border-zinc-700 bg-zinc-800 text-zinc-400'
+            } ${isHost ? 'hover:border-amber-400' : 'opacity-75 cursor-default'}`}
+          >
+            {fillBots ? 'Bots: ON' : 'Bots: OFF'}
+          </button>
+        </div>
+
         {errorMsg && (
           <div className="mt-3 rounded-lg border border-red-500/60 bg-red-950/60 px-3 py-2 text-xs text-red-200">
             {errorMsg}
@@ -608,23 +730,13 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
 
         {/* Footer Actions */}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 pt-4">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onLeaveRoom}
-              className="rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-700"
-            >
-              Leave Room
-            </button>
-            <button
-              type="button"
-              onClick={onOpenGarage}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-2 text-xs font-semibold text-zinc-100 hover:border-amber-500"
-            >
-              <Wrench className="h-3.5 w-3.5 text-amber-400" />
-              Customize Tank
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onLeaveRoom}
+            className="rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-700"
+          >
+            Leave Room
+          </button>
 
           {isHost ? (
             <button
@@ -634,13 +746,181 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
               className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
             >
               <Play className="h-4 w-4" />
-              {canLaunch ? 'Start Match' : 'Waiting for Players...'}
+              {!hasEnoughPlayers
+                ? 'Waiting for Players...'
+                : !allGuestsReady
+                ? 'Waiting for Ready...'
+                : 'Start Match'}
             </button>
           ) : (
-            <div className="text-xs font-medium text-zinc-300">
-              Connected! Waiting for Host to launch...
+            <div className="flex items-center gap-3">
+              {isLocalReady && (
+                <span className="text-xs font-medium text-emerald-300">
+                  Ready — waiting for Host to start
+                </span>
+              )}
+              <button
+                type="button"
+                data-testid="ready-toggle-btn"
+                onClick={() => onToggleReady(!isLocalReady)}
+                className={`inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors ${
+                  isLocalReady
+                    ? 'border border-emerald-500 bg-emerald-600/25 text-emerald-200 hover:bg-emerald-600/35'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-500'
+                }`}
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                {isLocalReady ? 'Ready ✓ (Cancel)' : 'Ready Up'}
+              </button>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export interface InviteRoomPreview {
+  exists: boolean;
+  format?: MatchFormat;
+  mode?: GameMode;
+  players?: number;
+  maxPlayers?: number;
+  message?: string;
+}
+
+interface InviteJoinModalProps {
+  roomCode: string;
+  roomInfo: InviteRoomPreview | null;
+  playerName: string;
+  onPlayerNameChange: (name: string) => void;
+  loadout: TankLoadout;
+  connecting: boolean;
+  errorMsg: string | null;
+  onOpenGarage: () => void;
+  onConfirmJoin: () => void;
+  onCancel: () => void;
+}
+
+export const InviteJoinModal: React.FC<InviteJoinModalProps> = ({
+  roomCode,
+  roomInfo,
+  playerName,
+  onPlayerNameChange,
+  loadout,
+  connecting,
+  errorMsg,
+  onOpenGarage,
+  onConfirmJoin,
+  onCancel,
+}) => {
+  const palette = PAINT_PALETTES[loadout.paint];
+  const bullet = BULLET_UPGRADES[loadout.bulletType ?? 'standard'];
+  const decalName = DECAL_OPTIONS.find((d) => d.id === loadout.decal)?.name ?? 'Clean Hull';
+
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-black/80 p-4 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="invite-join-title"
+    >
+      <div className="w-full max-w-md rounded-xl border border-zinc-700/90 bg-[#161921] p-6 shadow-2xl">
+        <div className="text-xs font-semibold uppercase tracking-wider text-amber-400">
+          Multiplayer Room Invite
+        </div>
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <h2 id="invite-join-title" className="font-display text-2xl font-bold tracking-wide text-zinc-100">
+            Configure Before Joining
+          </h2>
+          <span className="font-mono-num rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-sm font-bold tracking-widest text-amber-300">
+            {roomCode}
+          </span>
+        </div>
+
+        {roomInfo && roomInfo.exists && roomInfo.format && roomInfo.mode && (
+          <div className="mt-2 text-xs text-zinc-400">
+            {MATCH_FORMAT_META[roomInfo.format].name} · {GAME_MODE_META[roomInfo.mode].name} ·{' '}
+            {roomInfo.players}/{roomInfo.maxPlayers} Connected
+          </div>
+        )}
+        {roomInfo && !roomInfo.exists && (
+          <div className="mt-2 rounded border border-red-500/50 bg-red-950/50 px-3 py-1.5 text-xs text-red-200">
+            {roomInfo.message || `Room ${roomCode} was not found or has already closed.`}
+          </div>
+        )}
+
+        {/* Callsign Input */}
+        <div className="mt-4">
+          <label htmlFor="invite-callsign-input" className="block text-xs font-semibold text-zinc-400 mb-1.5">
+            Commander Callsign
+          </label>
+          <input
+            id="invite-callsign-input"
+            type="text"
+            maxLength={18}
+            value={playerName}
+            onChange={(e) => onPlayerNameChange(e.target.value)}
+            placeholder="Commander"
+            className="w-full rounded-lg border border-zinc-700 bg-[#101217] px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-amber-500 focus:outline-none"
+          />
+        </div>
+
+        {/* Tank Summary + Customize CTA */}
+        <div className="mt-4 rounded-lg border border-zinc-700/80 bg-[#111318] p-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                Your Tank Loadout
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <span
+                  className="h-3.5 w-3.5 shrink-0 rounded-sm border border-black/40"
+                  style={{ backgroundColor: palette.primary }}
+                />
+                <span className="truncate text-sm font-bold text-zinc-100">{palette.name}</span>
+              </div>
+              <div className="mt-1 font-mono-num text-[11px] text-zinc-400">
+                {bullet.name} · {decalName} · A{loadout.armorLevel}·S{loadout.speedLevel}·P{loadout.powerLevel}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenGarage}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-600 bg-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-100 hover:border-amber-500 hover:bg-zinc-700 transition-colors shrink-0"
+            >
+              <Wrench className="h-3.5 w-3.5 text-amber-400" />
+              Customize Tank
+            </button>
+          </div>
+        </div>
+
+        {errorMsg && (
+          <div
+            role="alert"
+            className="mt-3 rounded-lg border border-red-500/60 bg-red-950/60 px-3 py-2 text-xs text-red-200"
+          >
+            {errorMsg}
+          </div>
+        )}
+
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700"
+          >
+            Back to Menu
+          </button>
+          <button
+            type="button"
+            disabled={connecting || (roomInfo !== null && !roomInfo.exists)}
+            onClick={onConfirmJoin}
+            className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors disabled:opacity-50"
+          >
+            {connecting ? 'Joining...' : 'Enter Staging Room'}
+            <ArrowRight className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </div>

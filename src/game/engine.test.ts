@@ -6,6 +6,7 @@ import {
   MAX_UPGRADE_POINTS,
 } from './customization';
 import {
+  computeBotInput,
   createEmptyInput,
   createMatchState,
   CTF_CAPTURES_TARGET,
@@ -394,4 +395,41 @@ test('bullet upgrade types implement twin parallel shells, bank-shot scaling, Si
   }
   assert.equal(p2Pl.buffs.slowUntil > plasmaState.elapsed, true, 'Cryo Plasma applies timed slow on hit');
 });
+
+test('bot A* pathfinding escapes L-wall corner pocket without getting stuck wiggling', () => {
+  const state = createMatchState({ mode: 'deathmatch', mapId: 'crossfire_depot' });
+  const bot = state.tanks[1]!;
+  const target = state.tanks[2]!;
+  // Place bot inside the northwest L-wall pocket (x:245..390, y:280..455) and enemy on far outside corner
+  bot.x = 320;
+  bot.y = 370;
+  target.x = 180;
+  target.y = 220;
+
+  let minWindowDisplacement = Infinity;
+  let windowStartX = bot.x;
+  let windowStartY = bot.y;
+
+  // Step 3.6 seconds (180 ticks @ 20ms) and track continuous progress
+  for (let i = 1; i <= 180; i++) {
+    const botInput = computeBotInput(state, 1, false);
+    stepSimulation(state, { 1: botInput, 2: createEmptyInput(0) }, 0.02);
+
+    if (i % 45 === 0) {
+      const disp = Math.hypot(bot.x - windowStartX, bot.y - windowStartY);
+      if (disp < minWindowDisplacement) {
+        minWindowDisplacement = disp;
+      }
+      windowStartX = bot.x;
+      windowStartY = bot.y;
+    }
+  }
+
+  const netDisplacement = Math.hypot(bot.x - 320, bot.y - 370);
+  const exitedPocket = bot.x > 395 || bot.y > 460 || bot.x < 240 || bot.y < 275;
+  assert.equal(netDisplacement > 140, true, `Bot stalled instead of navigating around wall (moved ${netDisplacement.toFixed(1)}px)`);
+  assert.equal(minWindowDisplacement > 35, true, `Bot wiggled/stalled during a 0.9s window (min disp ${minWindowDisplacement.toFixed(1)}px)`);
+  assert.equal(exitedPocket, true, `Bot should exit the L-wall pocket cleanly (final pos ${bot.x.toFixed(1)}, ${bot.y.toFixed(1)})`);
+});
+
 

@@ -1100,7 +1100,8 @@ export function stepSimulation(
 }
 
 function hasLineOfSight(map: ArenaMap, x1: number, y1: number, x2: number, y2: number): boolean {
-  const steps = 16;
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(4, Math.ceil(dist / 24));
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
     const px = x1 + (x2 - x1) * t;
@@ -1110,6 +1111,266 @@ function hasLineOfSight(map: ArenaMap, x1: number, y1: number, x2: number, y2: n
     }
   }
   return true;
+}
+
+function hasCircleClearPath(
+  map: ArenaMap,
+  crates: CrateState[],
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  radius: number
+): boolean {
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(2, Math.ceil(dist / 16));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const px = x1 + (x2 - x1) * t;
+    const py = y1 + (y2 - y1) * t;
+    if (
+      map.walls.some((w) => resolveCircleRect(px, py, radius, w).hit) ||
+      crates.some((c) => resolveCircleRect(px, py, radius, c).hit)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const NAV_CELL = 20;
+const NAV_COLS = 60; // 1200 / 20
+const NAV_ROWS = 38; // 760 / 20
+const NAV_TOTAL = NAV_COLS * NAV_ROWS;
+
+const staticWallGridCache = new Map<MapId, Uint8Array>();
+
+function getStaticWallGrid(map: ArenaMap): Uint8Array {
+  const cached = staticWallGridCache.get(map.id);
+  if (cached) return cached;
+  const grid = new Uint8Array(NAV_TOTAL);
+  for (let r = 0; r < NAV_ROWS; r++) {
+    const cy = r * NAV_CELL + NAV_CELL * 0.5;
+    for (let c = 0; c < NAV_COLS; c++) {
+      const cx = c * NAV_CELL + NAV_CELL * 0.5;
+      if (map.walls.some((w) => resolveCircleRect(cx, cy, 19.5, w).hit)) {
+        grid[r * NAV_COLS + c] = 1;
+      }
+    }
+  }
+  staticWallGridCache.set(map.id, grid);
+  return grid;
+}
+
+function nearestWalkableCell(wallGrid: Uint8Array, startCol: number, startRow: number): number {
+  const clampedC = Math.max(0, Math.min(NAV_COLS - 1, startCol));
+  const clampedR = Math.max(0, Math.min(NAV_ROWS - 1, startRow));
+  const startIdx = clampedR * NAV_COLS + clampedC;
+  if (!wallGrid[startIdx]) return startIdx;
+
+  let bestIdx = -1;
+  let bestDist = Infinity;
+  for (let dr = -4; dr <= 4; dr++) {
+    for (let dc = -4; dc <= 4; dc++) {
+      const c = clampedC + dc;
+      const r = clampedR + dr;
+      if (c < 0 || c >= NAV_COLS || r < 0 || r >= NAV_ROWS) continue;
+      const idx = r * NAV_COLS + c;
+      if (!wallGrid[idx]) {
+        const d = dc * dc + dr * dr;
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = idx;
+        }
+      }
+    }
+  }
+  return bestIdx >= 0 ? bestIdx : startIdx;
+}
+
+const NAV_DIRS: Array<{ dc: number; dr: number; cost: number }> = [
+  { dc: 1, dr: 0, cost: 10 },
+  { dc: -1, dr: 0, cost: 10 },
+  { dc: 0, dr: 1, cost: 10 },
+  { dc: 0, dr: -1, cost: 10 },
+  { dc: 1, dr: 1, cost: 14 },
+  { dc: 1, dr: -1, cost: 14 },
+  { dc: -1, dr: 1, cost: 14 },
+  { dc: -1, dr: -1, cost: 14 },
+];
+
+function findGridPath(
+  map: ArenaMap,
+  crates: CrateState[],
+  startX: number,
+  startY: number,
+  goalX: number,
+  goalY: number
+): Array<{ x: number; y: number }> {
+  const wallGrid = getStaticWallGrid(map);
+  const startIdx = nearestWalkableCell(
+    wallGrid,
+    Math.floor(startX / NAV_CELL),
+    Math.floor(startY / NAV_CELL)
+  );
+  const goalIdx = nearestWalkableCell(
+    wallGrid,
+    Math.floor(goalX / NAV_CELL),
+    Math.floor(goalY / NAV_CELL)
+  );
+
+  if (startIdx === goalIdx) {
+    return [{ x: goalX, y: goalY }];
+  }
+
+  // Mark cells overlapped by crates with elevated traversal cost so bots route around crates when possible
+  const crateMask = new Uint8Array(NAV_TOTAL);
+  for (const crate of crates) {
+    const minC = Math.max(0, Math.floor((crate.x - 18) / NAV_CELL));
+    const maxC = Math.min(NAV_COLS - 1, Math.floor((crate.x + crate.w + 18) / NAV_CELL));
+    const minR = Math.max(0, Math.floor((crate.y - 18) / NAV_CELL));
+    const maxR = Math.min(NAV_ROWS - 1, Math.floor((crate.y + crate.h + 18) / NAV_CELL));
+    for (let r = minR; r <= maxR; r++) {
+      const cy = r * NAV_CELL + NAV_CELL * 0.5;
+      for (let c = minC; c <= maxC; c++) {
+        const cx = c * NAV_CELL + NAV_CELL * 0.5;
+        if (resolveCircleRect(cx, cy, 18, crate).hit) {
+          crateMask[r * NAV_COLS + c] = 1;
+        }
+      }
+    }
+  }
+
+  const gScore = new Int32Array(NAV_TOTAL).fill(1_000_000_000);
+  const fScore = new Int32Array(NAV_TOTAL).fill(1_000_000_000);
+  const cameFrom = new Int32Array(NAV_TOTAL).fill(-1);
+  const closed = new Uint8Array(NAV_TOTAL);
+  const inOpen = new Uint8Array(NAV_TOTAL);
+
+  const goalC = goalIdx % NAV_COLS;
+  const goalR = Math.floor(goalIdx / NAV_COLS);
+  const heuristic = (idx: number) => {
+    const dc = Math.abs((idx % NAV_COLS) - goalC);
+    const dr = Math.abs(Math.floor(idx / NAV_COLS) - goalR);
+    return 10 * Math.max(dc, dr) + 4 * Math.min(dc, dr);
+  };
+
+  gScore[startIdx] = 0;
+  fScore[startIdx] = heuristic(startIdx);
+  const open: number[] = [startIdx];
+  inOpen[startIdx] = 1;
+
+  let found = false;
+  while (open.length > 0) {
+    let bestPos = 0;
+    let bestF = fScore[open[0]];
+    for (let i = 1; i < open.length; i++) {
+      const f = fScore[open[i]];
+      if (f < bestF) {
+        bestF = f;
+        bestPos = i;
+      }
+    }
+    const current = open[bestPos];
+    open[bestPos] = open[open.length - 1];
+    open.pop();
+    inOpen[current] = 0;
+
+    if (current === goalIdx) {
+      found = true;
+      break;
+    }
+    closed[current] = 1;
+
+    const cc = current % NAV_COLS;
+    const cr = Math.floor(current / NAV_COLS);
+
+    for (const dir of NAV_DIRS) {
+      const nc = cc + dir.dc;
+      const nr = cr + dir.dr;
+      if (nc < 0 || nc >= NAV_COLS || nr < 0 || nr >= NAV_ROWS) continue;
+      const nIdx = nr * NAV_COLS + nc;
+      if (closed[nIdx] || wallGrid[nIdx]) continue;
+      // Prevent corner-cutting through diagonal walls
+      if (dir.dc !== 0 && dir.dr !== 0) {
+        if (wallGrid[cr * NAV_COLS + nc] || wallGrid[nr * NAV_COLS + cc]) continue;
+      }
+
+      const stepCost = dir.cost + (crateMask[nIdx] ? 60 : 0);
+      const tentativeG = gScore[current] + stepCost;
+      if (tentativeG < gScore[nIdx]) {
+        cameFrom[nIdx] = current;
+        gScore[nIdx] = tentativeG;
+        fScore[nIdx] = tentativeG + heuristic(nIdx);
+        if (!inOpen[nIdx]) {
+          open.push(nIdx);
+          inOpen[nIdx] = 1;
+        }
+      }
+    }
+  }
+
+  if (!found) {
+    return [{ x: goalX, y: goalY }];
+  }
+
+  const rawPath: Array<{ x: number; y: number }> = [];
+  let cur = goalIdx;
+  while (cur !== -1 && cur !== startIdx) {
+    const c = cur % NAV_COLS;
+    const r = Math.floor(cur / NAV_COLS);
+    rawPath.push({ x: c * NAV_CELL + NAV_CELL * 0.5, y: r * NAV_CELL + NAV_CELL * 0.5 });
+    cur = cameFrom[cur];
+  }
+  rawPath.reverse();
+  if (rawPath.length > 0) {
+    rawPath[rawPath.length - 1] = { x: goalX, y: goalY };
+  } else {
+    rawPath.push({ x: goalX, y: goalY });
+  }
+  return rawPath;
+}
+
+interface BotNavState {
+  mapId: MapId;
+  lastPathTime: number;
+  waypoints: Array<{ x: number; y: number }>;
+  anchorX: number;
+  anchorY: number;
+  anchorTime: number;
+  escapeX: number;
+  escapeY: number;
+  escapeUntil: number;
+  strafeSign: 1 | -1;
+  strafeUntil: number;
+}
+
+const botNavMemory = new WeakMap<GameSnapshot, Map<PlayerId, BotNavState>>();
+
+function getBotNavState(state: GameSnapshot, botId: PlayerId, x: number, y: number): BotNavState {
+  let byBot = botNavMemory.get(state);
+  if (!byBot) {
+    byBot = new Map();
+    botNavMemory.set(state, byBot);
+  }
+  let nav = byBot.get(botId);
+  if (!nav || nav.mapId !== state.mapId) {
+    nav = {
+      mapId: state.mapId,
+      lastPathTime: -1,
+      waypoints: [],
+      anchorX: x,
+      anchorY: y,
+      anchorTime: state.elapsed,
+      escapeX: 0,
+      escapeY: 0,
+      escapeUntil: -1,
+      strafeSign: botId % 2 === 0 ? 1 : -1,
+      strafeUntil: state.elapsed + 1.5,
+    };
+    byBot.set(botId, nav);
+  }
+  return nav;
 }
 
 export function computeBotInput(
@@ -1165,39 +1426,145 @@ export function computeBotInput(
     goalY = state.powerUps[0].y;
   }
 
-  const dx = goalX - bot.x;
-  const dy = goalY - bot.y;
-  const dist = Math.hypot(dx, dy);
+  const nav = getBotNavState(state, botId, bot.x, bot.y);
 
-  let desiredX = dx / (dist || 1);
-  let desiredY = dy / (dist || 1);
-  if (state.mode === 'deathmatch' && dist < 210) {
-    const strafeSign = Math.sin(state.elapsed * 1.1 + botId * 2) > 0 ? 1 : -1;
-    desiredX = (-dy / (dist || 1)) * strafeSign;
-    desiredY = (dx / (dist || 1)) * strafeSign;
+  // Recompute grid A* path periodically (not every tick) to avoid frame-to-frame path flipping
+  const driftedFromPath =
+    nav.waypoints.length > 0 &&
+    Math.hypot(nav.waypoints[0].x - bot.x, nav.waypoints[0].y - bot.y) > 150;
+  if (
+    nav.lastPathTime < 0 ||
+    state.elapsed - nav.lastPathTime >= 0.18 ||
+    nav.waypoints.length === 0 ||
+    driftedFromPath
+  ) {
+    nav.waypoints = findGridPath(map, state.crates, bot.x, bot.y, goalX, goalY);
+    nav.lastPathTime = state.elapsed;
   }
 
-  const probeDist = 42;
-  const probeX = bot.x + desiredX * probeDist;
-  const probeY = bot.y + desiredY * probeDist;
-  const blockedAhead =
-    map.walls.some((w) => resolveCircleRect(probeX, probeY, 22, w).hit) ||
-    state.crates.some((c) => resolveCircleRect(probeX, probeY, 22, c).hit);
-
-  if (blockedAhead) {
-    const perpX = -desiredY;
-    const perpY = desiredX;
-    const altX = bot.x + perpX * probeDist;
-    const altY = bot.y + perpY * probeDist;
-    const altBlocked = map.walls.some((w) => resolveCircleRect(altX, altY, 22, w).hit);
-    desiredX = altBlocked ? -perpX : perpX;
-    desiredY = altBlocked ? -perpY : perpY;
+  // Advance reached waypoints and string-pull to the furthest clearly reachable waypoint
+  while (
+    nav.waypoints.length > 1 &&
+    Math.hypot(nav.waypoints[0].x - bot.x, nav.waypoints[0].y - bot.y) < 24
+  ) {
+    nav.waypoints.shift();
   }
 
-  const aimDx = nearestEnemy.x - bot.x;
-  const aimDy = nearestEnemy.y - bot.y;
-  const aimAngle = Math.atan2(aimDy, aimDx) + Math.sin(state.elapsed * 2.3 + botId) * 0.1;
+  let targetWp = nav.waypoints[0] ?? { x: goalX, y: goalY };
+  const lookLimit = Math.min(nav.waypoints.length - 1, 8);
+  for (let i = lookLimit; i >= 1; i--) {
+    const wp = nav.waypoints[i];
+    if (hasCircleClearPath(map, state.crates, bot.x, bot.y, wp.x, wp.y, 19)) {
+      targetWp = wp;
+      break;
+    }
+  }
+
+  const wpDx = targetWp.x - bot.x;
+  const wpDy = targetWp.y - bot.y;
+  const wpDist = Math.hypot(wpDx, wpDy);
+
+  let desiredX = wpDx / (wpDist || 1);
+  let desiredY = wpDy / (wpDist || 1);
+
+  const enemyDx = nearestEnemy.x - bot.x;
+  const enemyDy = nearestEnemy.y - bot.y;
+  const enemyDist = Math.hypot(enemyDx, enemyDy);
   const los = hasLineOfSight(map, bot.x, bot.y, nearestEnemy.x, nearestEnemy.y);
+
+  // Committed close-range strafe in Deathmatch only when clear of walls
+  if (state.mode === 'deathmatch' && enemyDist < 205 && los) {
+    const perpX = -enemyDy / (enemyDist || 1);
+    const perpY = enemyDx / (enemyDist || 1);
+    const testX = bot.x + perpX * nav.strafeSign * 40;
+    const testY = bot.y + perpY * nav.strafeSign * 40;
+    const strafeBlocked =
+      map.walls.some((w) => resolveCircleRect(testX, testY, 21, w).hit) ||
+      state.crates.some((c) => resolveCircleRect(testX, testY, 21, c).hit);
+
+    if (strafeBlocked || state.elapsed >= nav.strafeUntil) {
+      const altSign: 1 | -1 = nav.strafeSign === 1 ? -1 : 1;
+      const altX = bot.x + perpX * altSign * 40;
+      const altY = bot.y + perpY * altSign * 40;
+      const altBlocked =
+        map.walls.some((w) => resolveCircleRect(altX, altY, 21, w).hit) ||
+        state.crates.some((c) => resolveCircleRect(altX, altY, 21, c).hit);
+      if (!altBlocked) {
+        nav.strafeSign = altSign;
+        nav.strafeUntil = state.elapsed + 1.4;
+      }
+    }
+
+    const activeStrafeX = bot.x + perpX * nav.strafeSign * 40;
+    const activeStrafeY = bot.y + perpY * nav.strafeSign * 40;
+    const activeBlocked =
+      map.walls.some((w) => resolveCircleRect(activeStrafeX, activeStrafeY, 21, w).hit) ||
+      state.crates.some((c) => resolveCircleRect(activeStrafeX, activeStrafeY, 21, c).hit);
+
+    if (!activeBlocked) {
+      desiredX = perpX * nav.strafeSign;
+      desiredY = perpY * nav.strafeSign;
+    }
+  }
+
+  // Stuck / anti-wiggle detector: if bot moves < 14px over 0.55s while trying to travel, commit to clearest open heading for 0.48s
+  const wantsToMove = wpDist > 24 || (state.mode === 'deathmatch' && enemyDist < 205);
+  if (state.elapsed < nav.escapeUntil) {
+    desiredX = nav.escapeX;
+    desiredY = nav.escapeY;
+  } else if (wantsToMove && state.elapsed - nav.anchorTime >= 0.55) {
+    const progress = Math.hypot(bot.x - nav.anchorX, bot.y - nav.anchorY);
+    nav.anchorX = bot.x;
+    nav.anchorY = bot.y;
+    nav.anchorTime = state.elapsed;
+
+    if (progress < 14) {
+      let bestDirX = -desiredY;
+      let bestDirY = desiredX;
+      let bestScore = -Infinity;
+      for (let i = 0; i < 8; i++) {
+        const ang = (i * Math.PI) / 4;
+        const dx = Math.cos(ang);
+        const dy = Math.sin(ang);
+        const px = bot.x + dx * 44;
+        const py = bot.y + dy * 44;
+        const hitWall = map.walls.some((w) => resolveCircleRect(px, py, 21, w).hit);
+        const hitCrate = state.crates.some((c) => resolveCircleRect(px, py, 21, c).hit);
+        if (!hitWall && !hitCrate) {
+          const alignmentWithGoal = dx * desiredX + dy * desiredY;
+          const score = 10 + alignmentWithGoal;
+          if (score > bestScore) {
+            bestScore = score;
+            bestDirX = dx;
+            bestDirY = dy;
+          }
+        }
+      }
+      nav.escapeX = bestDirX;
+      nav.escapeY = bestDirY;
+      nav.escapeUntil = state.elapsed + 0.48;
+      nav.lastPathTime = -1; // Force fresh path once unstuck
+      desiredX = bestDirX;
+      desiredY = bestDirY;
+    }
+  } else if (state.elapsed < nav.anchorTime) {
+    nav.anchorTime = state.elapsed;
+  }
+
+  // If a destructible crate sits right in front of our movement heading, blast it instead of stalling
+  const blockingCrate = state.crates.find((c) => {
+    const cx = c.x + c.w * 0.5;
+    const cy = c.y + c.h * 0.5;
+    const d = Math.hypot(cx - bot.x, cy - bot.y);
+    if (d > 72) return false;
+    const dot = ((cx - bot.x) / (d || 1)) * desiredX + ((cy - bot.y) / (d || 1)) * desiredY;
+    return dot > 0.55;
+  });
+
+  const aimAngle =
+    !los && blockingCrate
+      ? Math.atan2(blockingCrate.y + blockingCrate.h * 0.5 - bot.y, blockingCrate.x + blockingCrate.w * 0.5 - bot.x)
+      : Math.atan2(enemyDy, enemyDx) + Math.sin(state.elapsed * 2.3 + botId) * 0.08;
 
   const incomingThreat = state.projectiles.some((p) => {
     if (p.teamId === bot.teamId) return false;
@@ -1206,14 +1573,15 @@ export function computeBotInput(
 
   const openingReady = state.elapsed > 1.2;
   const burstWindow = Math.sin(state.elapsed * 3.1 + botId) > -0.15;
+  const shouldFire = aggressive && openingReady && ((los && burstWindow) || Boolean(blockingCrate));
 
   return {
-    up: desiredY < -0.28,
-    down: desiredY > 0.28,
-    left: desiredX < -0.28,
-    right: desiredX > 0.28,
+    up: desiredY < -0.25,
+    down: desiredY > 0.25,
+    left: desiredX < -0.25,
+    right: desiredX > 0.25,
     aimAngle,
-    fire: aggressive && openingReady && los && burstWindow,
+    fire: shouldFire,
     dash: incomingThreat && bot.dashCooldownTimer <= 0,
   };
 }

@@ -254,6 +254,7 @@ export interface RoomPlayerInfo {
   loadout: TankLoadout;
   connected: boolean;
   isHost: boolean;
+  ready: boolean;
 }
 
 export type ServerMessage =
@@ -265,6 +266,7 @@ export type ServerMessage =
       format: MatchFormat;
       mode: GameMode;
       mapSelection: MapSelection;
+      fillBots: boolean;
       players: RoomPlayerInfo[];
     }
   | {
@@ -275,6 +277,7 @@ export type ServerMessage =
       format: MatchFormat;
       mode: GameMode;
       mapSelection: MapSelection;
+      fillBots: boolean;
       players: RoomPlayerInfo[];
     }
   | {
@@ -284,6 +287,7 @@ export type ServerMessage =
       format: MatchFormat;
       mode: GameMode;
       mapSelection: MapSelection;
+      fillBots: boolean;
       players: RoomPlayerInfo[];
       status: 'waiting' | 'playing';
     }
@@ -300,6 +304,11 @@ export type ServerMessage =
       snapshot: GameSnapshot;
       events: GameEvent[];
       serverTime: number;
+    }
+  | {
+      type: 'game:rematch_status';
+      votedPlayerIds: PlayerId[];
+      totalPlayers: number;
     }
   | {
       type: 'room:opponent_left';
@@ -327,8 +336,10 @@ export type ClientMessage =
       format?: MatchFormat;
       mode?: GameMode;
       mapSelection?: MapSelection;
+      fillBots?: boolean;
       teamId?: 1 | 2;
       playerName?: string;
+      ready?: boolean;
     }
   | {
       type: 'room:start_match';
@@ -339,4 +350,7 @@ export type ClientMessage =
     }
   | {
       type: 'game:rematch';
+    }
+  | {
+      type: 'game:rematch_cancel';
     };

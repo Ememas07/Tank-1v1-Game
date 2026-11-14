@@ -1,8 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RotateCcw, Home } from 'lucide-react';
+import { RotateCcw, Home, Play, Volume2, VolumeX, CheckCircle2 } from 'lucide-react';
 import { GameHud } from './components/GameHud';
 import { TankGarageModal } from './components/TankGarageModal';
-import { TitleOverlay, WaitingLobby } from './components/TitleAndLobby';
+import {
+  InviteJoinModal,
+  type InviteRoomPreview,
+  TitleOverlay,
+  WaitingLobby,
+} from './components/TitleAndLobby';
 import {
   BULLET_UPGRADES,
   clampLoadout,
@@ -12,6 +17,7 @@ import {
 } from './game/customization';
 import {
   computeBotInput,
+  createEmptyInput,
   createMatchState,
   stepSimulation,
 } from './game/engine';
@@ -87,8 +93,12 @@ export default function App() {
   const [selectedFormat, setSelectedFormat] = useState<MatchFormat>('1v1');
   const [selectedMode, setSelectedMode] = useState<GameMode>('deathmatch');
   const [selectedMap, setSelectedMap] = useState<MapSelection>('auto');
+  const [fillBots, setFillBots] = useState<boolean>(false);
   const [joinCode, setJoinCode] = useState<string>('');
+  const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
+  const [inviteRoomInfo, setInviteRoomInfo] = useState<InviteRoomPreview | null>(null);
   const [garageOpen, setGarageOpen] = useState<boolean>(false);
+  const [paused, setPaused] = useState<boolean>(false);
   const [muted, setMuted] = useState<boolean>(false);
   const [connecting, setConnecting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -98,6 +108,8 @@ export default function App() {
   const [localPlayerId, setLocalPlayerId] = useState<PlayerId>(1);
   const [hostId, setHostId] = useState<PlayerId>(1);
   const [roomPlayers, setRoomPlayers] = useState<RoomPlayerInfo[]>([]);
+  const [rematchVotes, setRematchVotes] = useState<PlayerId[]>([]);
+  const [rematchTotal, setRematchTotal] = useState<number>(2);
   const [isSoloMode, setIsSoloMode] = useState<boolean>(false);
 
   const [hudSnapshot, setHudSnapshot] = useState<GameSnapshot>(() =>
@@ -109,10 +121,14 @@ export default function App() {
   screenRef.current = screen;
   const garageOpenRef = useRef<boolean>(garageOpen);
   garageOpenRef.current = garageOpen;
+  const pausedRef = useRef<boolean>(paused);
+  pausedRef.current = paused;
   const isSoloRef = useRef<boolean>(isSoloMode);
   isSoloRef.current = isSoloMode;
   const localPlayerIdRef = useRef<PlayerId>(localPlayerId);
   localPlayerIdRef.current = localPlayerId;
+  const roomPlayersRef = useRef<RoomPlayerInfo[]>(roomPlayers);
+  roomPlayersRef.current = roomPlayers;
   const wsRef = useRef<WebSocket | null>(null);
   const lastHudKeyRef = useRef<string>('');
 
@@ -158,6 +174,15 @@ export default function App() {
       localStorage.setItem(STORAGE_NAME_KEY, name);
     } catch {
       // ignore
+    }
+    if (
+      wsRef.current &&
+      wsRef.current.readyState === WebSocket.OPEN &&
+      screenRef.current === 'waiting' &&
+      name.trim().length > 0
+    ) {
+      const msg: ClientMessage = { type: 'room:update_config', playerName: name };
+      wsRef.current.send(JSON.stringify(msg));
     }
   }, []);
 
@@ -211,6 +236,8 @@ export default function App() {
       setRoomCode(null);
       setLocalPlayerId(1);
       setIsSoloMode(true);
+      setPaused(false);
+      setRematchVotes([]);
       setHudSnapshot(cloneSnapshotForHud(fresh));
       setErrorMsg(null);
       setScreen('playing');
@@ -259,13 +286,17 @@ export default function App() {
 
         if (msg.type === 'room:created' || msg.type === 'room:joined') {
           setIsSoloMode(false);
+          setPaused(false);
+          setPendingInviteCode(null);
           setRoomCode(msg.roomCode);
           setLocalPlayerId(msg.playerId);
           setHostId(msg.hostId);
           setSelectedFormat(msg.format);
           setSelectedMode(msg.mode);
           setSelectedMap(msg.mapSelection);
+          setFillBots(msg.fillBots);
           setRoomPlayers(msg.players);
+          setRematchVotes([]);
           setErrorMsg(null);
           setScreen('waiting');
         } else if (msg.type === 'room:updated') {
@@ -273,15 +304,20 @@ export default function App() {
           setSelectedFormat(msg.format);
           setSelectedMode(msg.mode);
           setSelectedMap(msg.mapSelection);
+          setFillBots(msg.fillBots);
           setRoomPlayers(msg.players);
         } else if (msg.type === 'room:error') {
           setErrorMsg(msg.message);
         } else if (msg.type === 'room:opponent_left') {
           clearInputs();
+          setPaused(false);
+          setRematchVotes([]);
           setErrorMsg(msg.message);
           setScreen('waiting');
         } else if (msg.type === 'game:start') {
           clearInputs();
+          setPaused(false);
+          setRematchVotes([]);
           if (document.activeElement instanceof HTMLElement) {
             document.activeElement.blur();
           }
@@ -291,6 +327,9 @@ export default function App() {
           setHudSnapshot(cloneSnapshotForHud(msg.snapshot));
           setErrorMsg(null);
           setScreen('playing');
+        } else if (msg.type === 'game:rematch_status') {
+          setRematchVotes(msg.votedPlayerIds);
+          setRematchTotal(msg.totalPlayers);
         } else if (msg.type === 'game:state') {
           simSnapshotRef.current = msg.snapshot;
           if (msg.events.length > 0) {
@@ -298,6 +337,9 @@ export default function App() {
             soundEngine.handleEvents(msg.events);
           }
           if (msg.snapshot.phase === 'gameover' && screenRef.current !== 'gameover') {
+            setPaused(false);
+            setRematchVotes([]);
+            setRematchTotal(Math.max(1, roomPlayersRef.current.length));
             setHudSnapshot(cloneSnapshotForHud(msg.snapshot));
             setScreen('gameover');
           }
@@ -341,6 +383,8 @@ export default function App() {
 
   const handleLeaveToMenu = useCallback(() => {
     clearInputs();
+    setPaused(false);
+    setRematchVotes([]);
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -383,7 +427,11 @@ export default function App() {
     if (roomParam && roomParam.trim().length >= 4) {
       const clean = roomParam.trim().toUpperCase();
       setJoinCode(clean);
-      handleJoinRoom(clean, false);
+      setPendingInviteCode(clean);
+      fetch(`/api/rooms/${encodeURIComponent(clean)}`)
+        .then((res) => res.json())
+        .then((data) => setInviteRoomInfo(data as InviteRoomPreview))
+        .catch(() => setInviteRoomInfo(null));
     } else if (autostartParam === '1') {
       const fmt: MatchFormat =
         formatParam === '2v2' || formatParam === 'ffa' ? formatParam : '1v1';
@@ -420,13 +468,29 @@ export default function App() {
           setGarageOpen(false);
           return;
         }
-        if (screenRef.current === 'playing' || screenRef.current === 'gameover') {
-          handleLeaveToMenu();
+        if (pendingInviteCode && screenRef.current === 'title') {
+          setPendingInviteCode(null);
+          return;
+        }
+        if (screenRef.current === 'playing') {
+          clearInputs();
+          setPaused((prev) => {
+            const next = !prev;
+            if (next && !isSoloRef.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              const myTank = simSnapshotRef.current.tanks[localPlayerIdRef.current];
+              const msg: ClientMessage = {
+                type: 'game:input',
+                input: createEmptyInput(myTank?.turretAngle ?? 0),
+              };
+              wsRef.current.send(JSON.stringify(msg));
+            }
+            return next;
+          });
           return;
         }
       }
 
-      if (screenRef.current === 'title' && !garageOpen && !isTyping) {
+      if (screenRef.current === 'title' && !garageOpen && !pendingInviteCode && !isTyping) {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           handleHostRoom();
@@ -434,7 +498,7 @@ export default function App() {
         }
       }
 
-      if (!isTyping) {
+      if (!isTyping && !pausedRef.current) {
         keysPressedRef.current.add(e.code);
       }
     };
@@ -458,7 +522,7 @@ export default function App() {
       window.removeEventListener('blur', onBlur);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [clearInputs, garageOpen, handleHostRoom, handleLeaveToMenu, handleToggleMute]);
+  }, [clearInputs, garageOpen, handleHostRoom, handleToggleMute, pendingInviteCode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -534,28 +598,33 @@ export default function App() {
           vfxRef.current.reset();
         }
       } else if (curScreen === 'playing') {
-        const localInput = buildLocalInput();
+        const localInput = pausedRef.current
+          ? createEmptyInput(snap.tanks[localPlayerIdRef.current]?.turretAngle ?? 0)
+          : buildLocalInput();
         if (isSoloRef.current) {
-          const inputs: Partial<Record<PlayerId, PlayerInput>> = {
-            [localPlayerIdRef.current]: localInput,
-          };
-          for (const id of snap.activePlayerIds) {
-            if (id !== localPlayerIdRef.current) {
-              inputs[id] = computeBotInput(snap, id, true);
+          if (!pausedRef.current) {
+            const inputs: Partial<Record<PlayerId, PlayerInput>> = {
+              [localPlayerIdRef.current]: localInput,
+            };
+            for (const id of snap.activePlayerIds) {
+              if (id !== localPlayerIdRef.current) {
+                inputs[id] = computeBotInput(snap, id, true);
+              }
             }
-          }
-          const events = stepSimulation(snap, inputs, dt);
-          if (events.length > 0) {
-            vfxRef.current.ingestEvents(events);
-            soundEngine.handleEvents(events);
-          }
-          vfxRef.current.step(snap, dt);
-          if (snap.phase === 'gameover') {
-            setHudSnapshot(cloneSnapshotForHud(snap));
-            setScreen('gameover');
+            const events = stepSimulation(snap, inputs, dt);
+            if (events.length > 0) {
+              vfxRef.current.ingestEvents(events);
+              soundEngine.handleEvents(events);
+            }
+            vfxRef.current.step(snap, dt);
+            if (snap.phase === 'gameover') {
+              setHudSnapshot(cloneSnapshotForHud(snap));
+              setScreen('gameover');
+            }
           }
         } else {
           if (
+            !pausedRef.current &&
             wsRef.current &&
             wsRef.current.readyState === WebSocket.OPEN &&
             now - lastNetInputSend >= 22
@@ -631,11 +700,14 @@ export default function App() {
     };
   }, []);
 
+  const hasVotedRematch = rematchVotes.includes(localPlayerId);
   const handleRematch = () => {
     if (isSoloMode) {
       startSoloSkirmish(hudSnapshot.format, hudSnapshot.mode);
     } else if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const msg: ClientMessage = { type: 'game:rematch' };
+      const msg: ClientMessage = {
+        type: hasVotedRematch ? 'game:rematch_cancel' : 'game:rematch',
+      };
       wsRef.current.send(JSON.stringify(msg));
     }
   };
@@ -705,6 +777,29 @@ export default function App() {
         />
       )}
 
+      {screen === 'title' && pendingInviteCode && (
+        <InviteJoinModal
+          roomCode={pendingInviteCode}
+          roomInfo={inviteRoomInfo}
+          playerName={playerName}
+          onPlayerNameChange={handleNameChange}
+          loadout={loadout}
+          connecting={connecting}
+          errorMsg={errorMsg}
+          onOpenGarage={() => setGarageOpen(true)}
+          onConfirmJoin={() => handleJoinRoom(pendingInviteCode)}
+          onCancel={() => {
+            setPendingInviteCode(null);
+            setErrorMsg(null);
+            if (window.location.search.includes('room=')) {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('room');
+              window.history.replaceState({}, '', url.pathname + url.search);
+            }
+          }}
+        />
+      )}
+
       {screen === 'waiting' && roomCode && (
         <WaitingLobby
           roomCode={roomCode}
@@ -713,7 +808,10 @@ export default function App() {
           format={selectedFormat}
           mode={selectedMode}
           mapSelection={selectedMap}
+          fillBots={fillBots}
           players={roomPlayers}
+          playerName={playerName}
+          onUpdatePlayerName={handleNameChange}
           errorMsg={errorMsg}
           onChangeFormat={(fmt) => {
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -735,9 +833,22 @@ export default function App() {
               wsRef.current.send(JSON.stringify(msg));
             }
           }}
+          onToggleFillBots={(fill) => {
+            setFillBots(fill);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              const msg: ClientMessage = { type: 'room:update_config', fillBots: fill };
+              wsRef.current.send(JSON.stringify(msg));
+            }
+          }}
           onSwitchTeam={(teamId) => {
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               const msg: ClientMessage = { type: 'room:update_config', teamId };
+              wsRef.current.send(JSON.stringify(msg));
+            }
+          }}
+          onToggleReady={(ready) => {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              const msg: ClientMessage = { type: 'room:update_config', ready };
               wsRef.current.send(JSON.stringify(msg));
             }
           }}
@@ -759,8 +870,77 @@ export default function App() {
           roomCode={roomCode}
           muted={muted}
           onToggleMute={handleToggleMute}
-          onLeave={handleLeaveToMenu}
+          onOpenPause={() => {
+            clearInputs();
+            setPaused(true);
+          }}
         />
+      )}
+
+      {screen === 'playing' && paused && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pause-heading"
+        >
+          <div className="w-full max-w-sm rounded-xl border border-zinc-700 bg-[#161921] p-6 text-center shadow-2xl">
+            <div className="text-xs font-semibold uppercase tracking-wider text-amber-400">
+              {isSoloMode ? 'Solo Skirmish' : `Multiplayer Room ${roomCode ?? ''}`}
+            </div>
+            <h2
+              id="pause-heading"
+              className="mt-1 font-display text-3xl font-extrabold tracking-wide text-zinc-100"
+            >
+              {isSoloMode ? 'MATCH PAUSED' : 'MATCH MENU'}
+            </h2>
+            <p className="mt-1 text-xs text-zinc-400">
+              {isSoloMode
+                ? 'Simulation is paused. Press Esc or Resume to return.'
+                : 'Live multiplayer arena continues while menu is open.'}
+            </p>
+
+            <div className="mt-5 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPaused(false)}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors"
+              >
+                <Play className="h-4 w-4" />
+                Resume Match (Esc)
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-700 transition-colors"
+              >
+                {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                {muted ? 'Audio: Muted (M)' : 'Audio: Enabled (M)'}
+              </button>
+
+              {isSoloMode && (
+                <button
+                  type="button"
+                  onClick={() => startSoloSkirmish(hudSnapshot.format, hudSnapshot.mode)}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-700 transition-colors"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Restart Skirmish
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleLeaveToMenu}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-red-800/70 bg-red-950/60 px-4 py-2 text-xs font-semibold text-red-200 hover:bg-red-900/60 transition-colors"
+              >
+                <Home className="h-4 w-4" />
+                Leave Match
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {screen === 'gameover' && localStatsTank && (
@@ -837,15 +1017,54 @@ export default function App() {
               </div>
             </div>
 
-            <div className="mt-6 flex items-center justify-center gap-3">
+            {!isSoloMode && (
+              <div className="mt-4 rounded-lg border border-zinc-800 bg-[#111318] px-3 py-2.5 text-left">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-zinc-400">Rematch Confirmation</span>
+                  <span className="font-mono-num font-bold text-amber-400">
+                    {rematchVotes.length} / {Math.max(1, roomPlayers.length || rematchTotal)} Confirmed
+                  </span>
+                </div>
+                {roomPlayers.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {roomPlayers.map((rp) => {
+                      const voted = rematchVotes.includes(rp.id);
+                      return (
+                        <span
+                          key={rp.id}
+                          className={`inline-flex items-center gap-1 text-[11px] font-medium ${
+                            voted ? 'text-emerald-400' : 'text-zinc-500'
+                          }`}
+                        >
+                          <CheckCircle2 className="h-3 w-3" />
+                          {rp.name}
+                          {rp.id === localPlayerId ? ' (You)' : ''}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center justify-center gap-3">
               <button
                 type="button"
                 data-start="true"
+                data-testid="rematch-btn"
                 onClick={handleRematch}
-                className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors"
+                className={`inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors ${
+                  !isSoloMode && hasVotedRematch
+                    ? 'border border-emerald-500 bg-emerald-600/25 text-emerald-200 hover:bg-emerald-600/35'
+                    : 'bg-amber-600 text-white hover:bg-amber-500'
+                }`}
               >
                 <RotateCcw className="h-4 w-4" />
-                Play Again
+                {isSoloMode
+                  ? 'Play Again'
+                  : hasVotedRematch
+                  ? 'Confirmed ✓ (Cancel)'
+                  : 'Confirm Rematch'}
               </button>
               <button
                 type="button"

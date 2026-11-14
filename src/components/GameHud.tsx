@@ -1,5 +1,5 @@
 import React from 'react';
-import { Volume2, VolumeX, LogOut } from 'lucide-react';
+import { Volume2, VolumeX, Pause } from 'lucide-react';
 import {
   BULLET_UPGRADES,
   computeTankStats,
@@ -16,7 +16,7 @@ interface GameHudProps {
   roomCode: string | null;
   muted: boolean;
   onToggleMute: () => void;
-  onLeave: () => void;
+  onOpenPause: () => void;
 }
 
 function ActiveBuffChips({ tank, elapsed }: { tank: TankState; elapsed: number }) {
@@ -304,7 +304,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   roomCode,
   muted,
   onToggleMute,
-  onLeave,
+  onOpenPause,
 }) => {
   const localTank = snapshot.tanks[localPlayerId] ?? snapshot.tanks[snapshot.activePlayerIds[0]];
   if (!localTank) return null;
@@ -438,13 +438,13 @@ export const GameHud: React.FC<GameHudProps> = ({
               tabIndex={-1}
               onClick={(e) => {
                 e.currentTarget.blur();
-                onLeave();
+                onOpenPause();
               }}
-              aria-label="Leave match (Esc)"
-              title="Leave match [Esc]"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-700/80 bg-[#14161b]/95 text-zinc-300 hover:bg-red-950/80 hover:border-red-700 hover:text-red-200 transition-colors"
+              aria-label="Pause menu (Esc)"
+              title="Pause menu [Esc]"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-700/80 bg-[#14161b]/95 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
             >
-              <LogOut className="h-4 w-4" />
+              <Pause className="h-4 w-4" />
             </button>
           </div>
         </div>
