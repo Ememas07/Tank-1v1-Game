@@ -49,6 +49,8 @@ interface GameRoom {
   tickInterval: NodeJS.Timeout | null;
   tickCount: number;
   lastStepTime: number;
+  countdownTimer: NodeJS.Timeout | null;
+  countdownSeconds: number | null;
 }
 
 const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -90,7 +92,7 @@ function getRoomPlayersList(room: GameRoom): RoomPlayerInfo[] {
     loadout: slot.loadout,
     connected: Boolean(slot.ws && slot.ws.readyState === WebSocket.OPEN),
     isHost: slot.id === room.hostId,
-    ready: slot.id === room.hostId ? true : slot.ready,
+    ready: slot.ready,
   }));
 }
 
@@ -104,6 +106,82 @@ function stopRoomLoop(room: GameRoom): void {
   if (room.tickInterval) {
     clearInterval(room.tickInterval);
     room.tickInterval = null;
+  }
+}
+
+function stopCountdown(room: GameRoom, broadcastCancel = true): void {
+  if (room.countdownTimer) {
+    clearInterval(room.countdownTimer);
+    room.countdownTimer = null;
+  }
+  const hadCountdown = room.countdownSeconds !== null;
+  room.countdownSeconds = null;
+  if (broadcastCancel && hadCountdown) {
+    broadcastRoom(room, {
+      type: 'room:countdown_cancelled',
+    });
+  }
+}
+
+function isRoomReadyToLaunch(room: GameRoom): boolean {
+  if (room.status !== 'waiting') return false;
+  const slots = getConnectedSlots(room);
+  if (slots.length < 1) return false;
+
+  if (!room.fillBots) {
+    if (room.format === '1v1' && slots.length < 2) return false;
+    if (room.format === '2v2') {
+      const counts = getTeamCounts(room);
+      if (counts[1] === 0 || counts[2] === 0) return false;
+    }
+    if (room.format === 'ffa' && slots.length < 2) return false;
+  }
+
+  // All human players in the room must be ready
+  return slots.every((s) => s.ready);
+}
+
+function checkAndHandleAutoStart(room: GameRoom): void {
+  if (room.status !== 'waiting') return;
+  const canAutoStart = isRoomReadyToLaunch(room);
+
+  if (canAutoStart) {
+    if (room.countdownTimer) return;
+    room.countdownSeconds = 3;
+    broadcastRoom(room, {
+      type: 'room:countdown',
+      count: 3,
+    });
+
+    room.countdownTimer = setInterval(() => {
+      if (room.status !== 'waiting') {
+        stopCountdown(room, false);
+        return;
+      }
+      if (!isRoomReadyToLaunch(room)) {
+        stopCountdown(room, true);
+        return;
+      }
+      if (room.countdownSeconds === null) {
+        stopCountdown(room, false);
+        return;
+      }
+
+      room.countdownSeconds -= 1;
+      if (room.countdownSeconds > 0) {
+        broadcastRoom(room, {
+          type: 'room:countdown',
+          count: room.countdownSeconds,
+        });
+      } else {
+        stopCountdown(room, false);
+        startRoomMatch(room);
+      }
+    }, 1000);
+  } else {
+    if (room.countdownTimer) {
+      stopCountdown(room, true);
+    }
   }
 }
 
@@ -163,6 +241,7 @@ const BOT_LOADOUTS: Record<PlayerId, TankLoadout> = {
 };
 
 function startRoomMatch(room: GameRoom): void {
+  stopCountdown(room, false);
   stopRoomLoop(room);
   const slots = getConnectedSlots(room);
   const maxPlayers = room.format === '1v1' ? 2 : 4;
@@ -272,9 +351,14 @@ function handleDisconnect(ws: WebSocket): void {
 
   const remaining = getConnectedSlots(room);
   if (remaining.length === 0) {
+    stopCountdown(room, false);
     stopRoomLoop(room);
     rooms.delete(room.code);
     return;
+  }
+
+  if (room.status === 'waiting') {
+    stopCountdown(room, true);
   }
 
   // Reassign host if needed
@@ -335,7 +419,9 @@ function handleDisconnect(ws: WebSocket): void {
     fillBots: room.fillBots,
     players: getRoomPlayersList(room),
     status: room.status,
+    countdown: room.countdownSeconds,
   });
+  checkAndHandleAutoStart(room);
 }
 
 async function startServer() {
@@ -411,6 +497,8 @@ async function startServer() {
           tickInterval: null,
           tickCount: 0,
           lastStepTime: Date.now(),
+          countdownTimer: null,
+          countdownSeconds: null,
         };
         rooms.set(code, room);
         clientRoomMap.set(ws, { roomCode: code, playerId: 1 });
@@ -498,7 +586,9 @@ async function startServer() {
           fillBots: room.fillBots,
           players: getRoomPlayersList(room),
           status: room.status,
+          countdown: room.countdownSeconds,
         });
+        checkAndHandleAutoStart(room);
         return;
       }
 
@@ -521,7 +611,7 @@ async function startServer() {
           slot.name = msg.playerName.trim().slice(0, 18) || slot.name;
         }
         if (typeof msg.ready === 'boolean') {
-          slot.ready = mapping.playerId === room.hostId ? true : msg.ready;
+          slot.ready = msg.ready;
         }
         if (msg.teamId && room.format === '2v2') {
           const targetTeam = msg.teamId === 1 ? 1 : 2;
@@ -563,7 +653,9 @@ async function startServer() {
           fillBots: room.fillBots,
           players: getRoomPlayersList(room),
           status: room.status,
+          countdown: room.countdownSeconds,
         });
+        checkAndHandleAutoStart(room);
         return;
       }
 
@@ -589,6 +681,8 @@ async function startServer() {
           sendJson(ws, { type: 'room:error', message: 'Waiting for all players to ready up.' });
           return;
         }
+        stopCountdown(room, false);
+        slot.ready = true;
         startRoomMatch(room);
         return;
       }

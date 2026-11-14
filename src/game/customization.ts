@@ -65,6 +65,14 @@ export const PAINT_PALETTES: Record<PaintId, PaintPalette> = {
     trim: '#fef08a',
     barrel: '#52525b',
   },
+  lily_pink: {
+    id: 'lily_pink',
+    name: 'Lily Pink',
+    primary: '#ec4899',
+    secondary: '#be185d',
+    trim: '#fbcfe8',
+    barrel: '#475569',
+  },
 };
 
 export interface DecalMeta {
@@ -198,7 +206,10 @@ export const DEFAULT_P2_LOADOUT: TankLoadout = {
 };
 
 export function clampLoadout(input: Partial<TankLoadout> | undefined, fallback: TankLoadout): TankLoadout {
-  const paint = input?.paint && input.paint in PAINT_PALETTES ? input.paint : fallback.paint;
+  let rawPaint = input?.paint as string | undefined;
+  if (rawPaint === 'pink') rawPaint = 'lily_pink';
+  const paint =
+    rawPaint && rawPaint in PAINT_PALETTES ? (rawPaint as PaintId) : fallback.paint;
   const decalValid = DECAL_OPTIONS.some((d) => d.id === input?.decal);
   const decal: DecalId = decalValid && input?.decal ? input.decal : fallback.decal;
   const bulletType: BulletType =

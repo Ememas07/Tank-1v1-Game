@@ -126,6 +126,39 @@ class SoundEngine {
     });
   }
 
+  public playCountdownBeep(isFinal = false): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(isFinal ? 880 : 520, now);
+    gain.gain.setValueAtTime(0.16, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + (isFinal ? 0.32 : 0.14));
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + (isFinal ? 0.33 : 0.15));
+  }
+
+  public playReadyToggle(ready: boolean): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(ready ? 523.25 : 349.23, now);
+    osc.frequency.exponentialRampToValueAtTime(ready ? 783.99 : 261.63, now + 0.11);
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.13);
+  }
+
   public playVictory(): void {
     const ctx = this.ensureContext();
     if (!ctx) return;

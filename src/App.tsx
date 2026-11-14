@@ -32,6 +32,7 @@ import type {
   MapId,
   MapSelection,
   MatchFormat,
+  PaintId,
   PlayerId,
   PlayerInput,
   RoomPlayerInfo,
@@ -111,6 +112,7 @@ export default function App() {
   const [rematchVotes, setRematchVotes] = useState<PlayerId[]>([]);
   const [rematchTotal, setRematchTotal] = useState<number>(2);
   const [isSoloMode, setIsSoloMode] = useState<boolean>(false);
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
 
   const [hudSnapshot, setHudSnapshot] = useState<GameSnapshot>(() =>
     createMatchState({ format: '1v1', mode: 'deathmatch' })
@@ -297,6 +299,7 @@ export default function App() {
           setFillBots(msg.fillBots);
           setRoomPlayers(msg.players);
           setRematchVotes([]);
+          setCountdownSeconds(null);
           setErrorMsg(null);
           setScreen('waiting');
         } else if (msg.type === 'room:updated') {
@@ -306,18 +309,28 @@ export default function App() {
           setSelectedMap(msg.mapSelection);
           setFillBots(msg.fillBots);
           setRoomPlayers(msg.players);
+          if (msg.countdown !== undefined) {
+            setCountdownSeconds(msg.countdown);
+          }
+        } else if (msg.type === 'room:countdown') {
+          setCountdownSeconds(msg.count);
+          soundEngine.playCountdownBeep(msg.count === 1);
+        } else if (msg.type === 'room:countdown_cancelled') {
+          setCountdownSeconds(null);
         } else if (msg.type === 'room:error') {
           setErrorMsg(msg.message);
         } else if (msg.type === 'room:opponent_left') {
           clearInputs();
           setPaused(false);
           setRematchVotes([]);
+          setCountdownSeconds(null);
           setErrorMsg(msg.message);
           setScreen('waiting');
         } else if (msg.type === 'game:start') {
           clearInputs();
           setPaused(false);
           setRematchVotes([]);
+          setCountdownSeconds(null);
           if (document.activeElement instanceof HTMLElement) {
             document.activeElement.blur();
           }
@@ -385,6 +398,7 @@ export default function App() {
     clearInputs();
     setPaused(false);
     setRematchVotes([]);
+    setCountdownSeconds(null);
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -413,6 +427,7 @@ export default function App() {
     const formatParam = params.get('format');
     const mapParam = params.get('map');
     const bulletParam = params.get('bullet');
+    const paintParam = params.get('paint');
 
     const mapOverride: MapSelection | undefined =
       mapParam && mapParam in ARENA_MAPS ? (mapParam as MapId) : undefined;
@@ -420,7 +435,12 @@ export default function App() {
 
     let nextLoadout = loadout;
     if (bulletParam && bulletParam in BULLET_UPGRADES) {
-      nextLoadout = { ...loadout, bulletType: bulletParam as BulletType };
+      nextLoadout = { ...nextLoadout, bulletType: bulletParam as BulletType };
+      setLoadout(nextLoadout);
+    }
+    if (paintParam && (paintParam in PAINT_PALETTES || paintParam === 'pink')) {
+      const pId = paintParam === 'pink' ? 'lily_pink' : (paintParam as PaintId);
+      nextLoadout = { ...nextLoadout, paint: pId };
       setLoadout(nextLoadout);
     }
 
@@ -811,6 +831,7 @@ export default function App() {
           fillBots={fillBots}
           players={roomPlayers}
           playerName={playerName}
+          countdown={countdownSeconds}
           onUpdatePlayerName={handleNameChange}
           errorMsg={errorMsg}
           onChangeFormat={(fmt) => {
@@ -847,6 +868,11 @@ export default function App() {
             }
           }}
           onToggleReady={(ready) => {
+            soundEngine.unlock();
+            soundEngine.playReadyToggle(ready);
+            setRoomPlayers((prev) =>
+              prev.map((p) => (p.id === localPlayerId ? { ...p, ready } : p))
+            );
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               const msg: ClientMessage = { type: 'room:update_config', ready };
               wsRef.current.send(JSON.stringify(msg));
@@ -854,6 +880,7 @@ export default function App() {
           }}
           onOpenGarage={() => setGarageOpen(true)}
           onStartMatch={() => {
+            soundEngine.unlock();
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               const msg: ClientMessage = { type: 'room:start_match' };
               wsRef.current.send(JSON.stringify(msg));

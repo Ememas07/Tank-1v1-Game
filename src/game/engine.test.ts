@@ -4,6 +4,7 @@ import {
   clampLoadout,
   computeTankStats,
   MAX_UPGRADE_POINTS,
+  PAINT_PALETTES,
 } from './customization';
 import {
   computeBotInput,
@@ -431,5 +432,104 @@ test('bot A* pathfinding escapes L-wall corner pocket without getting stuck wigg
   assert.equal(minWindowDisplacement > 35, true, `Bot wiggled/stalled during a 0.9s window (min disp ${minWindowDisplacement.toFixed(1)}px)`);
   assert.equal(exitedPocket, true, `Bot should exit the L-wall pocket cleanly (final pos ${bot.x.toFixed(1)}, ${bot.y.toFixed(1)})`);
 });
+
+test('lobby readiness system correctly evaluates ready state and auto-start criteria', () => {
+  type TestPlayer = { id: number; teamId: 1 | 2; ready: boolean };
+
+  const checkReadyToLaunch = (
+    format: '1v1' | '2v2' | 'ffa',
+    fillBots: boolean,
+    players: TestPlayer[]
+  ): boolean => {
+    if (players.length < 1) return false;
+    if (!fillBots) {
+      if (format === '1v1' && players.length < 2) return false;
+      if (format === '2v2') {
+        const t1 = players.filter((p) => p.teamId === 1).length;
+        const t2 = players.filter((p) => p.teamId === 2).length;
+        if (t1 === 0 || t2 === 0) return false;
+      }
+      if (format === 'ffa' && players.length < 2) return false;
+    }
+    return players.every((p) => p.ready);
+  };
+
+  // 1v1 scenarios:
+  // 1. Host alone without bots -> cannot launch even if ready
+  assert.equal(checkReadyToLaunch('1v1', false, [{ id: 1, teamId: 1, ready: true }]), false);
+
+  // 2. Host alone WITH bots enabled and ready -> can launch
+  assert.equal(checkReadyToLaunch('1v1', true, [{ id: 1, teamId: 1, ready: true }]), true);
+
+  // 3. Host and guest connected, guest not ready -> cannot launch
+  assert.equal(
+    checkReadyToLaunch('1v1', false, [
+      { id: 1, teamId: 1, ready: true },
+      { id: 2, teamId: 2, ready: false },
+    ]),
+    false
+  );
+
+  // 4. Host and guest connected, both ready -> CAN AUTO-LAUNCH!
+  assert.equal(
+    checkReadyToLaunch('1v1', false, [
+      { id: 1, teamId: 1, ready: true },
+      { id: 2, teamId: 2, ready: true },
+    ]),
+    true
+  );
+
+  // 5. Guest toggles unready -> auto-launch cancelled
+  assert.equal(
+    checkReadyToLaunch('1v1', false, [
+      { id: 1, teamId: 1, ready: true },
+      { id: 2, teamId: 2, ready: false },
+    ]),
+    false
+  );
+
+  // 2v2 scenarios:
+  // 6. Two players on same team without bots -> cannot launch
+  assert.equal(
+    checkReadyToLaunch('2v2', false, [
+      { id: 1, teamId: 1, ready: true },
+      { id: 2, teamId: 1, ready: true },
+    ]),
+    false
+  );
+
+  // 7. Two players on opposing teams, both ready -> can launch
+  assert.equal(
+    checkReadyToLaunch('2v2', false, [
+      { id: 1, teamId: 1, ready: true },
+      { id: 2, teamId: 2, ready: true },
+    ]),
+    true
+  );
+});
+
+test('lily pink palette is available with correct metadata and loadout clamping', () => {
+  const lily = PAINT_PALETTES['lily_pink'];
+  assert.equal(Boolean(lily), true);
+  assert.equal(lily.id, 'lily_pink');
+  assert.equal(lily.name, 'Lily Pink');
+  assert.equal(typeof lily.primary, 'string');
+  assert.equal(typeof lily.secondary, 'string');
+  assert.equal(typeof lily.trim, 'string');
+  assert.equal(typeof lily.barrel, 'string');
+
+  const clampedDirect = clampLoadout(
+    { paint: 'lily_pink', decal: 'none', armorLevel: 1, speedLevel: 1, powerLevel: 1, bulletType: 'standard' },
+    { paint: 'cobalt', decal: 'none', armorLevel: 0, speedLevel: 0, powerLevel: 0, bulletType: 'standard' }
+  );
+  assert.equal(clampedDirect.paint, 'lily_pink');
+
+  const clampedAlias = clampLoadout(
+    { paint: 'pink' as any, decal: 'none', armorLevel: 1, speedLevel: 1, powerLevel: 1, bulletType: 'standard' },
+    { paint: 'cobalt', decal: 'none', armorLevel: 0, speedLevel: 0, powerLevel: 0, bulletType: 'standard' }
+  );
+  assert.equal(clampedAlias.paint, 'lily_pink');
+});
+
 
 

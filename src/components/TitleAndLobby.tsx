@@ -322,6 +322,7 @@ interface WaitingLobbyProps {
   fillBots: boolean;
   players: RoomPlayerInfo[];
   playerName: string;
+  countdown?: number | null;
   onUpdatePlayerName: (name: string) => void;
   errorMsg: string | null;
   onChangeFormat: (format: MatchFormat) => void;
@@ -345,6 +346,7 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
   fillBots,
   players,
   playerName,
+  countdown,
   onUpdatePlayerName,
   errorMsg,
   onChangeFormat,
@@ -381,6 +383,7 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
 
   const localPlayer = players.find((p) => p.id === playerId);
   const isLocalReady = Boolean(localPlayer?.ready);
+  const isCountdownActive = countdown !== null && countdown !== undefined;
   const alphaPlayers = players.filter((p) => p.teamId === 1);
   const bravoPlayers = players.filter((p) => p.teamId === 2);
 
@@ -428,6 +431,38 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
             {copiedLink ? 'Invite Link Copied' : 'Copy Friend Invite Link'}
           </button>
         </div>
+
+        {/* Auto-Start Countdown Banner */}
+        {isCountdownActive && (
+          <div
+            data-testid="countdown-banner"
+            className="mt-3.5 flex items-center justify-between gap-3 rounded-lg border border-emerald-500/80 bg-emerald-950/60 px-4 py-2.5 shadow-lg shadow-emerald-950/40 animate-pulse"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="flex h-3 w-3 relative shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+              </span>
+              <span className="text-xs sm:text-sm font-bold text-emerald-200 truncate">
+                All players ready! Starting match in:
+              </span>
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0">
+              <span className="font-mono-num text-2xl font-black text-amber-300">
+                {countdown}s
+              </span>
+              {isHost && (
+                <button
+                  type="button"
+                  onClick={onStartMatch}
+                  className="rounded bg-emerald-600 px-3 py-1 text-xs font-bold text-white hover:bg-emerald-500 transition-colors"
+                >
+                  Launch Now
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Local Callsign Quick-Edit */}
         <div className="mt-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-lg border border-zinc-800 bg-[#111318] px-3.5 py-2.5">
@@ -533,17 +568,18 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                             <span className="font-mono-num text-[10px] text-zinc-400">
                               {BULLET_UPGRADES[p.loadout.bulletType ?? 'standard'].shortCode} · A{p.loadout.armorLevel}·S{p.loadout.speedLevel}·P{p.loadout.powerLevel}
                             </span>
-                            {p.isHost ? (
-                              <span className="text-[10px] font-bold uppercase text-amber-400">Host</span>
-                            ) : (
-                              <span
-                                className={`text-[10px] font-bold uppercase ${
-                                  p.ready ? 'text-emerald-400' : 'text-zinc-500'
-                                }`}
-                              >
-                                {p.ready ? 'Ready' : 'Not Ready'}
+                            {p.isHost && (
+                              <span className="rounded bg-amber-500/15 border border-amber-500/40 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-400">
+                                Host
                               </span>
                             )}
+                            <span
+                              className={`text-[10px] font-bold uppercase ${
+                                p.ready ? 'text-emerald-400' : 'text-zinc-500'
+                              }`}
+                            >
+                              {p.ready ? 'Ready' : 'Not Ready'}
+                            </span>
                           </div>
                         </div>
                       );
@@ -572,27 +608,31 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
                     <span className="text-xs font-semibold text-zinc-400">
                       Commander {slotNum} {p?.isHost ? '· Host' : ''} {isYou ? '· You' : ''}
                     </span>
-                    {p && !p.isHost && (
-                      <span
-                        className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase ${
-                          p.ready ? 'text-emerald-400' : 'text-zinc-400'
-                        }`}
-                      >
-                        {p.ready ? (
-                          <>
-                            <CheckCircle2 className="h-3.5 w-3.5" />
-                            Ready
-                          </>
-                        ) : (
-                          <>
-                            <Clock className="h-3.5 w-3.5" />
-                            Not Ready
-                          </>
+                    {p && (
+                      <div className="flex items-center gap-1.5">
+                        {p.isHost && (
+                          <span className="rounded bg-amber-500/15 border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-400">
+                            Host
+                          </span>
                         )}
-                      </span>
-                    )}
-                    {p?.isHost && (
-                      <span className="text-[11px] font-bold uppercase text-amber-400">Host</span>
+                        <span
+                          className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase ${
+                            p.ready ? 'text-emerald-400' : 'text-zinc-400'
+                          }`}
+                        >
+                          {p.ready ? (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              Ready
+                            </>
+                          ) : (
+                            <>
+                              <Clock className="h-3.5 w-3.5" />
+                              Not Ready
+                            </>
+                          )}
+                        </span>
+                      </div>
                     )}
                   </div>
                   {p ? (
@@ -746,24 +786,50 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
           </button>
 
           {isHost ? (
-            <button
-              type="button"
-              disabled={!canLaunch}
-              onClick={onStartMatch}
-              className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
-            >
-              <Play className="h-4 w-4" />
-              {!hasEnoughPlayers
-                ? 'Waiting for Players...'
-                : !allGuestsReady
-                ? 'Waiting for Ready...'
-                : 'Start Match'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                data-testid="ready-toggle-btn"
+                onClick={() => onToggleReady(!isLocalReady)}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold transition-colors ${
+                  isLocalReady
+                    ? 'border border-emerald-500 bg-emerald-600/25 text-emerald-200 hover:bg-emerald-600/35'
+                    : 'border border-zinc-600 bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
+                }`}
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                {isLocalReady ? 'Ready ✓ (Cancel)' : 'Ready Up'}
+              </button>
+
+              <button
+                type="button"
+                disabled={!canLaunch}
+                onClick={onStartMatch}
+                className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                <Play className="h-4 w-4" />
+                {isCountdownActive
+                  ? 'Launch Match Now'
+                  : !hasEnoughPlayers
+                  ? 'Waiting for Players...'
+                  : !allGuestsReady
+                  ? 'Waiting for Ready...'
+                  : 'Start Match'}
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-3">
-              {isLocalReady && (
+              {isCountdownActive ? (
+                <span className="text-xs font-semibold text-amber-300">
+                  All ready! Starting in {countdown}s...
+                </span>
+              ) : isLocalReady ? (
                 <span className="text-xs font-medium text-emerald-300">
-                  Ready — waiting for Host to start
+                  Ready — waiting for other players
+                </span>
+              ) : (
+                <span className="text-xs font-medium text-zinc-400">
+                  Press Ready Up to begin
                 </span>
               )}
               <button

@@ -11,7 +11,8 @@ export type PaintId =
   | 'olive'
   | 'ochre'
   | 'graphite'
-  | 'sandstorm';
+  | 'sandstorm'
+  | 'lily_pink';
 
 export type DecalId = 'none' | 'stripes' | 'chevron' | 'star' | 'hazard';
 
@@ -290,6 +291,14 @@ export type ServerMessage =
       fillBots: boolean;
       players: RoomPlayerInfo[];
       status: 'waiting' | 'playing';
+      countdown?: number | null;
+    }
+  | {
+      type: 'room:countdown';
+      count: number;
+    }
+  | {
+      type: 'room:countdown_cancelled';
     }
   | {
       type: 'room:error';
