@@ -6,7 +6,9 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { clampLoadout, DEFAULT_P1_LOADOUT, DEFAULT_P2_LOADOUT } from './src/game/customization';
 import { computeBotInput, createEmptyInput, createMatchState, stepSimulation } from './src/game/engine';
 import { ARENA_MAPS } from './src/game/maps';
+import { cleanPlayerName } from './src/game/sync';
 import type {
+  ChatMessage,
   ClientMessage,
   GameMode,
   GameSnapshot,
@@ -45,6 +47,8 @@ interface GameRoom {
   players: Partial<Record<PlayerId, PlayerSlot>>;
   botIds: Set<PlayerId>;
   rematchVotes: Set<PlayerId>;
+  chatHistory: ChatMessage[];
+  nextChatId: number;
   snapshot: GameSnapshot | null;
   tickInterval: NodeJS.Timeout | null;
   tickCount: number;
@@ -493,6 +497,8 @@ async function startServer() {
           },
           botIds: new Set<PlayerId>(),
           rematchVotes: new Set<PlayerId>(),
+          chatHistory: [],
+          nextChatId: 1,
           snapshot: null,
           tickInterval: null,
           tickCount: 0,
@@ -512,6 +518,7 @@ async function startServer() {
           mapSelection: room.mapSelection,
           fillBots: room.fillBots,
           players: getRoomPlayersList(room),
+          chatHistory: room.chatHistory,
         });
         return;
       }
@@ -574,6 +581,7 @@ async function startServer() {
           mapSelection: room.mapSelection,
           fillBots: room.fillBots,
           players: getRoomPlayersList(room),
+          chatHistory: room.chatHistory,
         });
 
         broadcastRoom(room, {
@@ -656,6 +664,28 @@ async function startServer() {
           countdown: room.countdownSeconds,
         });
         checkAndHandleAutoStart(room);
+        return;
+      }
+
+      if (msg.type === 'room:chat') {
+        const cleanText = typeof msg.text === 'string' ? msg.text.trim().slice(0, 180) : '';
+        if (!cleanText) return;
+        const chatMsg: ChatMessage = {
+          id: `chat_${room.code}_${room.nextChatId++}`,
+          playerId: slot.id,
+          playerName: cleanPlayerName(slot.name) || `Commander ${slot.id}`,
+          paint: slot.loadout.paint,
+          text: cleanText,
+          timestamp: Date.now(),
+        };
+        room.chatHistory.push(chatMsg);
+        if (room.chatHistory.length > 60) {
+          room.chatHistory.shift();
+        }
+        broadcastRoom(room, {
+          type: 'room:chat',
+          message: chatMsg,
+        });
         return;
       }
 

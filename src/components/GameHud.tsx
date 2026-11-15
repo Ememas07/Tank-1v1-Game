@@ -1,5 +1,5 @@
 import React from 'react';
-import { Volume2, VolumeX, Pause, Home } from 'lucide-react';
+import { Volume2, VolumeX, Pause } from 'lucide-react';
 import {
   BULLET_UPGRADES,
   computeTankStats,

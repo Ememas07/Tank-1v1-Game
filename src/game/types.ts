@@ -258,6 +258,15 @@ export interface RoomPlayerInfo {
   ready: boolean;
 }
 
+export interface ChatMessage {
+  id: string;
+  playerId: PlayerId;
+  playerName: string;
+  paint: PaintId;
+  text: string;
+  timestamp: number;
+}
+
 export type ServerMessage =
   | {
       type: 'room:created';
@@ -269,6 +278,7 @@ export type ServerMessage =
       mapSelection: MapSelection;
       fillBots: boolean;
       players: RoomPlayerInfo[];
+      chatHistory: ChatMessage[];
     }
   | {
       type: 'room:joined';
@@ -280,6 +290,7 @@ export type ServerMessage =
       mapSelection: MapSelection;
       fillBots: boolean;
       players: RoomPlayerInfo[];
+      chatHistory: ChatMessage[];
     }
   | {
       type: 'room:updated';
@@ -299,6 +310,10 @@ export type ServerMessage =
     }
   | {
       type: 'room:countdown_cancelled';
+    }
+  | {
+      type: 'room:chat';
+      message: ChatMessage;
     }
   | {
       type: 'room:error';
@@ -349,6 +364,10 @@ export type ClientMessage =
       teamId?: 1 | 2;
       playerName?: string;
       ready?: boolean;
+    }
+  | {
+      type: 'room:chat';
+      text: string;
     }
   | {
       type: 'room:start_match';

@@ -3,7 +3,9 @@ import { Copy, Check, Wrench, Users, Play, Bot, ArrowRight, ArrowLeftRight, Chec
 import { BULLET_UPGRADES, DECAL_OPTIONS, PAINT_PALETTES } from '../game/customization';
 import { ARENA_MAPS, MAP_ORDER, MAP_THEME_TINTS } from '../game/maps';
 import { cleanPlayerName } from '../game/sync';
+import { RoomChatPanel } from './RoomChatPanel';
 import type {
+  ChatMessage,
   GameMode,
   MapSelection,
   MatchFormat,
@@ -324,7 +326,9 @@ interface WaitingLobbyProps {
   players: RoomPlayerInfo[];
   playerName: string;
   countdown?: number | null;
+  chatMessages: ChatMessage[];
   onUpdatePlayerName: (name: string) => void;
+  onSendChat: (text: string) => void;
   errorMsg: string | null;
   onChangeFormat: (format: MatchFormat) => void;
   onChangeMode: (mode: GameMode) => void;
@@ -348,7 +352,9 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
   players,
   playerName,
   countdown,
+  chatMessages,
   onUpdatePlayerName,
+  onSendChat,
   errorMsg,
   onChangeFormat,
   onChangeMode,
@@ -393,12 +399,11 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
     : format === '2v2'
     ? alphaPlayers.length >= 1 && bravoPlayers.length >= 1
     : players.length >= 2;
-  const allGuestsReady = players.filter((p) => !p.isHost).every((p) => p.ready);
   const canLaunch = hasEnoughPlayers;
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/75 p-4 overflow-y-auto">
-      <div className="w-full max-w-2xl rounded-xl border border-zinc-700/90 bg-[#161921] p-6 shadow-2xl">
+      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-xl border border-zinc-700/90 bg-[#161921] p-6 shadow-2xl">
         {/* Room Code & Invite Share Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800 pb-4">
           <div>
@@ -468,8 +473,11 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
           </div>
         )}
 
-        {/* Local Callsign Quick-Edit */}
-        <div className="mt-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-lg border border-zinc-800 bg-[#111318] px-3.5 py-2.5">
+        {/* Main Staging Content + Squad Comms Chat */}
+        <div className="mt-3.5 grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4 items-stretch">
+          <div className="min-w-0">
+            {/* Local Callsign Quick-Edit */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-lg border border-zinc-800 bg-[#111318] px-3.5 py-2.5">
           <label htmlFor="lobby-callsign-input" className="text-xs font-semibold text-zinc-400 whitespace-nowrap">
             Your Callsign
           </label>
@@ -771,6 +779,17 @@ export const WaitingLobby: React.FC<WaitingLobbyProps> = ({
           >
             {fillBots ? 'Bots: ON' : 'Bots: OFF'}
           </button>
+        </div>
+          </div>
+
+          {/* Right Column: Waiting Lobby Chat */}
+          <div className="flex flex-col min-h-[240px]">
+            <RoomChatPanel
+              messages={chatMessages}
+              localPlayerId={playerId}
+              onSend={onSendChat}
+            />
+          </div>
         </div>
 
         {errorMsg && (

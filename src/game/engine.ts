@@ -6,6 +6,7 @@ import {
   POWERUP_CATALOG,
 } from './customization';
 import { ARENA_MAPS, getMapForRound } from './maps';
+import { cleanPlayerName } from './sync';
 import type {
   ArenaMap,
   CrateState,
@@ -261,7 +262,7 @@ export function createMatchState(opts: CreateMatchOptions): GameSnapshot {
     teamSlotCount[teamId] = teamIdx + 1;
 
     const { pos, facing } = getSpawnForTank(format, setup.id, teamId, teamIdx, map);
-    const cleanName = (setup.name || '').replace(/[\u200B\u200C]/g, '').trim() || `Commander ${setup.id}`;
+    const cleanName = cleanPlayerName(setup.name) || `Commander ${setup.id}`;
     tanks[setup.id] = createTank(
       setup.id,
       teamId,

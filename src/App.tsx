@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { RotateCcw, Home, Play, Volume2, VolumeX, CheckCircle2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameHud } from './components/GameHud';
+import { GameOverModal } from './components/GameOverModal';
+import { PauseMenuModal } from './components/PauseMenuModal';
 import { TankGarageModal } from './components/TankGarageModal';
 import {
   InviteJoinModal,
@@ -32,6 +33,7 @@ import {
 } from './game/sync';
 import type {
   BulletType,
+  ChatMessage,
   ClientMessage,
   GameMode,
   GameSnapshot,
@@ -67,7 +69,8 @@ function loadSavedLoadout(): TankLoadout {
 function loadSavedName(): string {
   try {
     const raw = localStorage.getItem(STORAGE_NAME_KEY);
-    if (raw && raw.trim()) return raw.trim().slice(0, 18);
+    const cleaned = cleanPlayerName(raw);
+    if (cleaned) return cleaned.slice(0, 18);
   } catch {
     // ignore
   }
@@ -117,6 +120,7 @@ export default function App() {
   const [roomPlayers, setRoomPlayers] = useState<RoomPlayerInfo[]>([]);
   const [rematchVotes, setRematchVotes] = useState<PlayerId[]>([]);
   const [rematchTotal, setRematchTotal] = useState<number>(2);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSoloMode, setIsSoloMode] = useState<boolean>(false);
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
 
@@ -142,6 +146,18 @@ export default function App() {
   const localReadyRef = useRef<boolean>(false);
   const roomPlayersRef = useRef<RoomPlayerInfo[]>(roomPlayers);
   roomPlayersRef.current = roomPlayers;
+  const latestMatchConfigRef = useRef<{
+    format: MatchFormat;
+    mode: GameMode;
+    map: MapSelection;
+    loadout: TankLoadout;
+  }>({ format: selectedFormat, mode: selectedMode, map: selectedMap, loadout });
+  latestMatchConfigRef.current = {
+    format: selectedFormat,
+    mode: selectedMode,
+    map: selectedMap,
+    loadout,
+  };
   const wsRef = useRef<WebSocket | null>(null);
   const lastHudKeyRef = useRef<string>('');
 
@@ -258,6 +274,7 @@ export default function App() {
       setIsSoloMode(true);
       setPaused(false);
       setRematchVotes([]);
+      setChatMessages([]);
       setHudSnapshot(cloneSnapshotForHud(fresh));
       setErrorMsg(null);
       setScreen('playing');
@@ -340,6 +357,7 @@ export default function App() {
             })
           );
           setRematchVotes([]);
+          setChatMessages(msg.chatHistory ?? []);
           setCountdownSeconds(null);
           setErrorMsg(null);
           setScreen('waiting');
@@ -380,9 +398,14 @@ export default function App() {
           soundEngine.playCountdownBeep(msg.count === 1);
         } else if (msg.type === 'room:countdown_cancelled') {
           setCountdownSeconds(null);
+        } else if (msg.type === 'room:chat') {
+          setChatMessages((prev) =>
+            prev.some((m) => m.id === msg.message.id) ? prev : [...prev.slice(-59), msg.message]
+          );
         } else if (msg.type === 'room:error') {
-          if (fillBots && msg.message === 'Waiting for more players to join.') {
-            startSoloSkirmish(selectedFormat, selectedMode, false, selectedMap, loadout);
+          if (fillBotsRef.current && msg.message === 'Waiting for more players to join.') {
+            const cfg = latestMatchConfigRef.current;
+            startSoloSkirmish(cfg.format, cfg.mode, false, cfg.map, cfg.loadout);
             return;
           }
           setErrorMsg(msg.message);
@@ -471,6 +494,7 @@ export default function App() {
     clearInputs();
     setPaused(false);
     setRematchVotes([]);
+    setChatMessages([]);
     setCountdownSeconds(null);
     localReadyRef.current = false;
     if (wsRef.current) {
@@ -485,6 +509,15 @@ export default function App() {
     vfxRef.current.reset();
     setScreen('title');
   }, [clearInputs]);
+
+  const handleSendChat = useCallback((text: string) => {
+    const clean = text.trim().slice(0, 180);
+    if (!clean) return;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const msg: ClientMessage = { type: 'room:chat', text: clean };
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
 
   const handleToggleMute = useCallback(() => {
     setMuted((prev) => {
@@ -621,6 +654,9 @@ export default function App() {
           return;
         }
         if (screenRef.current === 'playing') {
+          if (isTyping && target instanceof HTMLElement) {
+            target.blur();
+          }
           clearInputs();
           setPaused((prev) => {
             const next = !prev;
@@ -862,24 +898,6 @@ export default function App() {
 
   const localStatsTank =
     hudSnapshot.tanks[localPlayerId] ?? hudSnapshot.tanks[hudSnapshot.activePlayerIds[0]];
-  const didLocalWin = Boolean(
-    localStatsTank && hudSnapshot.winnerTeamId === localStatsTank.teamId
-  );
-  const accuracy =
-    localStatsTank && localStatsTank.shotsFired > 0
-      ? Math.round((localStatsTank.shotsHit / localStatsTank.shotsFired) * 100)
-      : 0;
-
-  const winnerLabel = (() => {
-    if (!hudSnapshot.winnerTeamId) return null;
-    if (hudSnapshot.format === '2v2') {
-      return `Team ${hudSnapshot.winnerTeamId === 1 ? 'Alpha' : 'Bravo'}`;
-    }
-    const winTank = hudSnapshot.activePlayerIds
-      .map((id) => hudSnapshot.tanks[id])
-      .find((t) => t && t.teamId === hudSnapshot.winnerTeamId);
-    return winTank?.name ?? `Commander ${hudSnapshot.winnerTeamId}`;
-  })();
 
   return (
     <div className="relative h-full w-full overflow-hidden select-none">
@@ -960,7 +978,9 @@ export default function App() {
           players={roomPlayers}
           playerName={playerName}
           countdown={countdownSeconds}
+          chatMessages={chatMessages}
           onUpdatePlayerName={handleNameChange}
+          onSendChat={handleSendChat}
           errorMsg={errorMsg}
           onChangeFormat={(fmt) => {
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -1056,208 +1076,33 @@ export default function App() {
       )}
 
       {screen === 'playing' && paused && (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="pause-heading"
-        >
-          <div className="w-full max-w-sm rounded-xl border border-zinc-700 bg-[#161921] p-6 text-center shadow-2xl">
-            <div className="text-xs font-semibold uppercase tracking-wider text-amber-400">
-              {isSoloMode ? 'Solo Skirmish' : `Multiplayer Room ${roomCode ?? ''}`}
-            </div>
-            <h2
-              id="pause-heading"
-              className="mt-1 font-display text-3xl font-extrabold tracking-wide text-zinc-100"
-            >
-              {isSoloMode ? 'MATCH PAUSED' : 'MATCH MENU'}
-            </h2>
-            <p className="mt-1 text-xs text-zinc-400">
-              {isSoloMode
-                ? 'Simulation is paused. Press Esc or Resume to return.'
-                : 'Live multiplayer arena continues while menu is open.'}
-            </p>
-
-            <div className="mt-5 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => setPaused(false)}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-amber-500 transition-colors"
-              >
-                <Play className="h-4 w-4" />
-                Resume Match (Esc)
-              </button>
-
-              <button
-                type="button"
-                onClick={handleToggleMute}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-700 transition-colors"
-              >
-                {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                {muted ? 'Audio: Muted (M)' : 'Audio: Enabled (M)'}
-              </button>
-
-              {isSoloMode && (
-                <button
-                  type="button"
-                  onClick={() => startSoloSkirmish(hudSnapshot.format, hudSnapshot.mode)}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-200 hover:bg-zinc-700 transition-colors"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  Restart Skirmish
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={handleLeaveToMenu}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-red-800/70 bg-red-950/60 px-4 py-2 text-xs font-semibold text-red-200 hover:bg-red-900/60 transition-colors"
-              >
-                <Home className="h-4 w-4" />
-                Leave Match
-              </button>
-              <a
-                href="/"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/80 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
-              >
-                Exit to AI Studio Hub
-              </a>
-            </div>
-          </div>
-        </div>
+        <PauseMenuModal
+          isSoloMode={isSoloMode}
+          roomCode={roomCode}
+          muted={muted}
+          localPlayerId={localPlayerId}
+          chatMessages={chatMessages}
+          onResume={() => setPaused(false)}
+          onToggleMute={handleToggleMute}
+          onRestartSolo={() => startSoloSkirmish(hudSnapshot.format, hudSnapshot.mode)}
+          onLeaveMatch={handleLeaveToMenu}
+          onSendChat={handleSendChat}
+        />
       )}
 
       {screen === 'gameover' && localStatsTank && (
-        <div
-          className="fixed inset-0 z-30 flex items-center justify-center bg-black/75 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="gameover-heading"
-        >
-          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-[#161921] p-6 text-center shadow-2xl">
-            <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              Match Complete
-            </div>
-            <h2
-              id="gameover-heading"
-              className={`mt-1 font-display text-4xl font-extrabold tracking-wide ${didLocalWin ? 'text-amber-400' : 'text-red-400'
-                }`}
-            >
-              {didLocalWin ? 'VICTORY' : 'DEFEAT'}
-            </h2>
-            {winnerLabel && (
-              <p className="mt-1 text-sm text-zinc-300">
-                <span className="font-semibold text-zinc-100">{winnerLabel}</span> claimed the arena
-              </p>
-            )}
-
-            {/* Match Standings Breakdown */}
-            <div className="mt-4 space-y-1.5 rounded-lg border border-zinc-800 bg-[#111318] p-3 text-left">
-              {hudSnapshot.activePlayerIds.map((id) => {
-                const t = hudSnapshot.tanks[id];
-                if (!t) return null;
-                const score =
-                  hudSnapshot.mode === 'koth'
-                    ? `${Math.round(hudSnapshot.teamKothProgress[t.teamId] ?? 0)}%`
-                    : `${hudSnapshot.teamScores[t.teamId] ?? 0}`;
-                return (
-                  <div key={id} className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="h-2.5 w-2.5 rounded-sm"
-                        style={{ backgroundColor: PAINT_PALETTES[t.loadout.paint].primary }}
-                      />
-                      <span className="font-semibold text-zinc-200">
-                        {t.name}
-                        {id === localPlayerId ? ' (You)' : ''}
-                        {hudSnapshot.format === '2v2' ? (
-                          <span className="ml-1.5 text-[10px] text-zinc-400">
-                            {t.teamId === 1 ? 'Alpha' : 'Bravo'}
-                          </span>
-                        ) : null}
-                      </span>
-                    </div>
-                    <span className="font-mono-num text-zinc-300">
-                      {t.kills} KO · Score {score}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-zinc-800 bg-[#111318] p-2.5">
-              <div>
-                <div className="text-[11px] text-zinc-400">Your Eliminations</div>
-                <div className="font-mono-num text-base font-bold text-zinc-100">
-                  {localStatsTank.kills}
-                </div>
-              </div>
-              <div className="border-l border-zinc-800">
-                <div className="text-[11px] text-zinc-400">Your Accuracy</div>
-                <div className="font-mono-num text-base font-bold text-amber-400">
-                  {accuracy}%
-                </div>
-              </div>
-            </div>
-
-            {!isSoloMode && (
-              <div className="mt-4 rounded-lg border border-zinc-800 bg-[#111318] px-3 py-2.5 text-left">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-zinc-400">Rematch Confirmation</span>
-                  <span className="font-mono-num font-bold text-amber-400">
-                    {rematchVotes.length} / {Math.max(1, roomPlayers.length || rematchTotal)} Confirmed
-                  </span>
-                </div>
-                {roomPlayers.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {roomPlayers.map((rp) => {
-                      const voted = rematchVotes.includes(rp.id);
-                      return (
-                        <span
-                          key={rp.id}
-                          className={`inline-flex items-center gap-1 text-[11px] font-medium ${voted ? 'text-emerald-400' : 'text-zinc-500'
-                            }`}
-                        >
-                          <CheckCircle2 className="h-3 w-3" />
-                          {rp.name}
-                          {rp.id === localPlayerId ? ' (You)' : ''}
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="mt-5 flex items-center justify-center gap-3">
-              <button
-                type="button"
-                data-start="true"
-                data-testid="rematch-btn"
-                onClick={handleRematch}
-                className={`inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors ${!isSoloMode && hasVotedRematch
-                    ? 'border border-emerald-500 bg-emerald-600/25 text-emerald-200 hover:bg-emerald-600/35'
-                    : 'bg-amber-600 text-white hover:bg-amber-500'
-                  }`}
-              >
-                <RotateCcw className="h-4 w-4" />
-                {isSoloMode
-                  ? 'Play Again'
-                  : hasVotedRematch
-                    ? 'Confirmed ✓ (Cancel)'
-                    : 'Confirm Rematch'}
-              </button>
-              <button
-                type="button"
-                onClick={handleLeaveToMenu}
-                className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-sm font-semibold text-zinc-200 hover:bg-zinc-700 transition-colors"
-              >
-                <Home className="h-4 w-4" />
-                Main Menu
-              </button>
-            </div>
-          </div>
-        </div>
+        <GameOverModal
+          snapshot={hudSnapshot}
+          localPlayerId={localPlayerId}
+          localStatsTank={localStatsTank}
+          isSoloMode={isSoloMode}
+          roomPlayers={roomPlayers}
+          rematchVotes={rematchVotes}
+          rematchTotal={rematchTotal}
+          hasVotedRematch={hasVotedRematch}
+          onRematch={handleRematch}
+          onLeaveToMenu={handleLeaveToMenu}
+        />
       )}
 
       {garageOpen && (
