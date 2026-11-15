@@ -5,6 +5,7 @@ import {
   POWERUP_CATALOG,
 } from './customization';
 import { ARENA_HEIGHT, ARENA_MAPS, ARENA_WIDTH, MAP_THEME_TINTS } from './maps';
+import { cleanPlayerName } from './sync';
 import type {
   CrateState,
   DecalId,
@@ -868,9 +869,10 @@ function drawOnTankBar(
   const by = tank.y - 34;
 
   // Name tag (with optional team prefix in 2v2)
+  const displayName = cleanPlayerName(tank.name) || (showTeamTag ? (tank.teamId === 1 ? 'Alpha' : 'Bravo') : `P${tank.id}`);
   const label = showTeamTag
-    ? `${tank.teamId === 1 ? '[A]' : '[B]'} ${tank.name}`
-    : tank.name;
+    ? `${tank.teamId === 1 ? '[A]' : '[B]'} ${displayName}`
+    : displayName;
   ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = 'rgba(0,0,0,0.7)';

@@ -27,7 +27,9 @@ import { ArenaVfx, renderArena } from './game/renderer';
 import { soundEngine } from './game/sound';
 import {
   cleanPlayerName,
+  encodeInBandChatPackets,
   encodeSyncPlayerName,
+  isInBandChat,
   parseHostFillBots,
   parsePlayerReady,
 } from './game/sync';
@@ -75,6 +77,16 @@ function loadSavedName(): string {
     // ignore
   }
   return 'Commander';
+}
+
+function sanitizeSnapshotNames(snapshot: GameSnapshot): GameSnapshot {
+  for (const id of snapshot.activePlayerIds) {
+    const t = snapshot.tanks[id];
+    if (t && t.name) {
+      t.name = cleanPlayerName(t.name) || `Commander ${id}`;
+    }
+  }
+  return snapshot;
 }
 
 function cloneSnapshotForHud(snap: GameSnapshot): GameSnapshot {
@@ -160,6 +172,20 @@ export default function App() {
   };
   const wsRef = useRef<WebSocket | null>(null);
   const lastHudKeyRef = useRef<string>('');
+  const knownPlayerNamesRef = useRef<Partial<Record<PlayerId, string>>>({});
+  const inBandBuffersRef = useRef<
+    Map<
+      string,
+      {
+        total: number;
+        count: number;
+        parts: string[];
+        playerId: PlayerId;
+        paint: PaintId;
+        timestamp: number;
+      }
+    >
+  >(new Map());
 
   const keysPressedRef = useRef<Set<string>>(new Set());
   const mouseDownRef = useRef<boolean>(false);
@@ -282,6 +308,95 @@ export default function App() {
     [clearInputs, loadout, playerName, selectedFormat, selectedMap, selectedMode]
   );
 
+  const appendChatMessage = useCallback((msg: ChatMessage) => {
+    setChatMessages((prev) => {
+      const isDup = prev.some(
+        (m) =>
+          m.id === msg.id ||
+          (m.playerId === msg.playerId &&
+            m.text === msg.text &&
+            Math.abs(m.timestamp - msg.timestamp) < 4000)
+      );
+      if (isDup) return prev;
+      return [...prev.slice(-59), msg];
+    });
+  }, []);
+
+  const ingestInBandPacket = useCallback(
+    (playerId: PlayerId, rawName: string, paint: PaintId) => {
+      const senderName =
+        knownPlayerNamesRef.current[playerId] ||
+        (playerId === localPlayerIdRef.current ? cleanPlayerName(playerName) : '') ||
+        `Commander ${playerId}`;
+
+      const singleMatch = rawName.match(/^!c:(.*?)\|?$/);
+      if (singleMatch) {
+        const text = singleMatch[1];
+        if (text) {
+          appendChatMessage({
+            id: `inband_${playerId}_${text}`,
+            playerId,
+            playerName: senderName,
+            paint,
+            text,
+            timestamp: Date.now(),
+          });
+        }
+        return;
+      }
+
+      const match = rawName.match(/^!([a-z0-9]{2})([a-z0-9])([a-z0-9]):(.*?)\|?$/i);
+      if (match) {
+        const [, msgId, seqStr, totStr, chunk] = match;
+        const seq = parseInt(seqStr, 36);
+        const tot = parseInt(totStr, 36);
+        if (Number.isNaN(seq) || Number.isNaN(tot) || seq < 1 || tot < 1) return;
+
+        const key = `${playerId}_${msgId.toLowerCase()}`;
+        const now = Date.now();
+
+        for (const [k, b] of inBandBuffersRef.current.entries()) {
+          if (now - b.timestamp > 15000) {
+            inBandBuffersRef.current.delete(k);
+          }
+        }
+
+        let buf = inBandBuffersRef.current.get(key);
+        if (!buf || buf.total !== tot) {
+          buf = {
+            total: tot,
+            count: 0,
+            parts: new Array(tot).fill(''),
+            playerId,
+            paint,
+            timestamp: now,
+          };
+          inBandBuffersRef.current.set(key, buf);
+        }
+
+        if (!buf.parts[seq - 1]) {
+          buf.parts[seq - 1] = chunk;
+          buf.count++;
+          if (buf.count === buf.total) {
+            const fullText = buf.parts.join('');
+            if (fullText) {
+              appendChatMessage({
+                id: `inband_${playerId}_${msgId}_${now}`,
+                playerId,
+                playerName: senderName,
+                paint,
+                text: fullText,
+                timestamp: now,
+              });
+            }
+            inBandBuffersRef.current.delete(key);
+          }
+        }
+      }
+    },
+    [appendChatMessage, playerName]
+  );
+
   const connectAndSend = useCallback(
     (initialMsg: ClientMessage) => {
       setConnecting(true);
@@ -349,9 +464,13 @@ export default function App() {
               const ready = isLocal
                 ? localReadyRef.current || parsePlayerReady(mp.name, mp.ready)
                 : parsePlayerReady(mp.name, mp.ready);
+              const cleaned = cleanPlayerName(mp.name);
+              if (cleaned) {
+                knownPlayerNamesRef.current[mp.id] = cleaned;
+              }
               return {
                 ...mp,
-                name: cleanPlayerName(mp.name),
+                name: cleaned || knownPlayerNamesRef.current[mp.id] || `Commander ${mp.id}`,
                 ready,
               };
             })
@@ -370,22 +489,49 @@ export default function App() {
 
           const hostSlot = msg.players.find((p) => p.id === msg.hostId);
           const isCurrentHost = localPlayerIdRef.current === msg.hostId;
-          const remoteFillBots = hostSlot
-            ? parseHostFillBots(hostSlot.name, msg.fillBots)
-            : fillBotsRef.current;
+          const remoteFillBots =
+            hostSlot && !isInBandChat(hostSlot.name)
+              ? parseHostFillBots(hostSlot.name, msg.fillBots)
+              : fillBotsRef.current;
           const activeFillBots = isCurrentHost ? fillBotsRef.current : remoteFillBots;
           setFillBots(activeFillBots);
           fillBotsRef.current = activeFillBots;
 
+          // Ingest in-band chat packets
+          for (const mp of msg.players) {
+            if (isInBandChat(mp.name)) {
+              ingestInBandPacket(mp.id, mp.name, mp.loadout.paint);
+            }
+          }
+
           setRoomPlayers(
             msg.players.map((mp) => {
               const isLocal = mp.id === localPlayerIdRef.current;
+              const isChat = isInBandChat(mp.name);
+              const prevPlayer = roomPlayersRef.current.find((p) => p.id === mp.id);
+
+              if (!isChat) {
+                const cleaned = cleanPlayerName(mp.name);
+                if (cleaned) {
+                  knownPlayerNamesRef.current[mp.id] = cleaned;
+                }
+              }
+
               const ready = isLocal
                 ? localReadyRef.current || parsePlayerReady(mp.name, mp.ready)
+                : isChat
+                ? prevPlayer?.ready ?? parsePlayerReady(mp.name, mp.ready)
                 : parsePlayerReady(mp.name, mp.ready);
+
+              const displayName =
+                knownPlayerNamesRef.current[mp.id] ||
+                cleanPlayerName(mp.name) ||
+                prevPlayer?.name ||
+                `Commander ${mp.id}`;
+
               return {
                 ...mp,
-                name: cleanPlayerName(mp.name),
+                name: displayName,
                 ready,
               };
             })
@@ -399,9 +545,7 @@ export default function App() {
         } else if (msg.type === 'room:countdown_cancelled') {
           setCountdownSeconds(null);
         } else if (msg.type === 'room:chat') {
-          setChatMessages((prev) =>
-            prev.some((m) => m.id === msg.message.id) ? prev : [...prev.slice(-59), msg.message]
-          );
+          appendChatMessage(msg.message);
         } else if (msg.type === 'room:error') {
           if (fillBotsRef.current && msg.message === 'Waiting for more players to join.') {
             const cfg = latestMatchConfigRef.current;
@@ -426,24 +570,26 @@ export default function App() {
           }
           vfxRef.current.reset();
           lastHudKeyRef.current = '';
-          simSnapshotRef.current = msg.snapshot;
-          setHudSnapshot(cloneSnapshotForHud(msg.snapshot));
+          const cleanSnap = sanitizeSnapshotNames(msg.snapshot);
+          simSnapshotRef.current = cleanSnap;
+          setHudSnapshot(cloneSnapshotForHud(cleanSnap));
           setErrorMsg(null);
           setScreen('playing');
         } else if (msg.type === 'game:rematch_status') {
           setRematchVotes(msg.votedPlayerIds);
           setRematchTotal(msg.totalPlayers);
         } else if (msg.type === 'game:state') {
-          simSnapshotRef.current = msg.snapshot;
+          const cleanSnap = sanitizeSnapshotNames(msg.snapshot);
+          simSnapshotRef.current = cleanSnap;
           if (msg.events.length > 0) {
             vfxRef.current.ingestEvents(msg.events);
             soundEngine.handleEvents(msg.events);
           }
-          if (msg.snapshot.phase === 'gameover' && screenRef.current !== 'gameover') {
+          if (cleanSnap.phase === 'gameover' && screenRef.current !== 'gameover') {
             setPaused(false);
             setRematchVotes([]);
             setRematchTotal(Math.max(1, roomPlayersRef.current.length));
-            setHudSnapshot(cloneSnapshotForHud(msg.snapshot));
+            setHudSnapshot(cloneSnapshotForHud(cleanSnap));
             setScreen('gameover');
           }
         }
@@ -510,14 +656,69 @@ export default function App() {
     setScreen('title');
   }, [clearInputs]);
 
-  const handleSendChat = useCallback((text: string) => {
-    const clean = text.trim().slice(0, 180);
-    if (!clean) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const msg: ClientMessage = { type: 'room:chat', text: clean };
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  }, []);
+  const handleSendChat = useCallback(
+    (text: string) => {
+      const clean = text.trim().slice(0, 180);
+      if (!clean) return;
+
+      const now = Date.now();
+      const localPlayer = roomPlayersRef.current.find((p) => p.id === localPlayerIdRef.current);
+      const myName = cleanPlayerName(localPlayer?.name || playerName) || 'Commander';
+      const myPaint = loadout.paint;
+
+      // 1. Optimistic append locally
+      const localMsg: ChatMessage = {
+        id: `local_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        playerId: localPlayerIdRef.current,
+        playerName: myName,
+        paint: myPaint,
+        text: clean,
+        timestamp: now,
+      };
+      appendChatMessage(localMsg);
+
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+      // 2. Native room:chat message (for updated servers)
+      wsRef.current.send(JSON.stringify({ type: 'room:chat', text: clean }));
+
+      // 3. Resilient in-band relay (works even on legacy un-restarted servers)
+      const isHost = localPlayerIdRef.current === hostIdRef.current;
+      const isReady = localReadyRef.current;
+      const currentFillBots = isHost && fillBotsRef.current;
+      const originalEncodedName = encodeSyncPlayerName(myName, isReady, currentFillBots);
+
+      const msgId = Math.random().toString(36).slice(2, 4);
+      const packets = encodeInBandChatPackets(msgId, clean);
+
+      packets.forEach((pkt, idx) => {
+        setTimeout(() => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'room:update_config',
+                playerName: pkt,
+                ready: isReady,
+              })
+            );
+          }
+        }, idx * 45);
+      });
+
+      setTimeout(() => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'room:update_config',
+              playerName: originalEncodedName,
+              ready: isReady,
+            })
+          );
+        }
+      }, packets.length * 45 + 50);
+    },
+    [appendChatMessage, playerName, loadout.paint]
+  );
 
   const handleToggleMute = useCallback(() => {
     setMuted((prev) => {

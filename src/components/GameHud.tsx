@@ -8,6 +8,7 @@ import {
 } from '../game/customization';
 import { CTF_CAPTURES_TARGET, DM_WINS_TARGET } from '../game/engine';
 import { ARENA_MAPS } from '../game/maps';
+import { cleanPlayerName } from '../game/sync';
 import type { GameSnapshot, PlayerId, TankState } from '../game/types';
 
 interface GameHudProps {
@@ -174,7 +175,7 @@ function TeamCluster({
                 }`}
               >
                 <span className="truncate font-medium text-zinc-200">
-                  {tank.name}
+                  {cleanPlayerName(tank.name) || `Commander ${tank.id}`}
                   {isLocal ? ' (You)' : ''}
                 </span>
                 <span className="font-mono-num font-semibold text-zinc-100 shrink-0">
@@ -273,7 +274,7 @@ function FfaStandingsCluster({
                       isLocal ? 'font-bold text-amber-300' : 'font-medium text-zinc-200'
                     }`}
                   >
-                    {tank.name}
+                    {cleanPlayerName(tank.name) || `Commander ${tank.id}`}
                     {isLocal ? ' (You)' : ''}
                   </span>
                 </div>
@@ -348,7 +349,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         ) : (
           <TeamCluster
             teamId={1}
-            teamName={snapshot.format === '2v2' ? 'Team Alpha' : alphaTanks[0]?.name || 'Player 1'}
+            teamName={snapshot.format === '2v2' ? 'Team Alpha' : cleanPlayerName(alphaTanks[0]?.name) || 'Player 1'}
             tanks={alphaTanks}
             snapshot={snapshot}
             localPlayerId={localPlayerId}
@@ -411,7 +412,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           ) : (
             <TeamCluster
               teamId={2}
-              teamName={snapshot.format === '2v2' ? 'Team Bravo' : bravoTanks[0]?.name || 'Player 2'}
+              teamName={snapshot.format === '2v2' ? 'Team Bravo' : cleanPlayerName(bravoTanks[0]?.name) || 'Player 2'}
               tanks={bravoTanks}
               snapshot={snapshot}
               localPlayerId={localPlayerId}
@@ -459,7 +460,7 @@ export const GameHud: React.FC<GameHudProps> = ({
               : snapshot.format === '2v2'
               ? `Team ${snapshot.roundWinnerTeamId === 1 ? 'Alpha' : 'Bravo'} Wins Round ${snapshot.round}`
               : `${
-                  allTanks.find((t) => t.teamId === snapshot.roundWinnerTeamId)?.name ?? 'Commander'
+                  cleanPlayerName(allTanks.find((t) => t.teamId === snapshot.roundWinnerTeamId)?.name) || 'Commander'
                 } Wins Round ${snapshot.round}`}
           </div>
           <div className="text-xs text-zinc-400">Deploying next tactical sector...</div>

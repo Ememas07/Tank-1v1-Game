@@ -264,7 +264,7 @@ function startRoomMatch(room: GameRoom): void {
     slots.map((s) => ({
       id: s.id,
       teamId: s.teamId,
-      name: s.name,
+      name: cleanPlayerName(s.name) || (s.id === 1 ? 'Commander 1' : `Commander ${s.id}`),
       loadout: s.loadout,
     }));
 

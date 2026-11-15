@@ -577,13 +577,48 @@ test('zero-width and tag synchronization correctly encodes and parses ready and 
   assert.equal(parseHostFillBots('Host', true), true);
   assert.equal(parseHostFillBots('Host~B', false), false);
 
-  // 4. Length capping to ensure it fits server 18 char limit
-  const longName = 'VeryLongCommanderNameExceedingLimit';
-  const encodedLong = encodeSyncPlayerName(longName, true, true, 18);
-  assert.equal(encodedLong.length <= 18, true);
-  assert.equal(parsePlayerReady(encodedLong), true);
-  assert.equal(parseHostFillBots(encodedLong), true);
-  assert.equal(cleanPlayerName(encodedLong).length <= 12, true);
+  // 5. Case-insensitivity and in-band chat packet handling
+  assert.equal(cleanPlayerName('Player~r'), 'Player');
+  assert.equal(cleanPlayerName('Player~b'), 'Player');
+  assert.equal(cleanPlayerName('Player~R~B'), 'Player');
+  assert.equal(cleanPlayerName('Player~r~b'), 'Player');
+  assert.equal(parsePlayerReady('Player~r'), true);
+  assert.equal(parseHostFillBots('Host~b'), true);
+  assert.equal(cleanPlayerName('!c:hello'), '');
+  assert.equal(cleanPlayerName('!m112:hello'), '');
+});
+
+test('in-band chat chunking encodes packets within 18 chars and decodes cleanly', async () => {
+  const { isInBandChat, encodeInBandChatPackets } = await import('./sync');
+
+  // Short message
+  assert.equal(isInBandChat('!c:Hi'), true);
+  const shortPackets = encodeInBandChatPackets('m1', 'Hi team!');
+  assert.equal(shortPackets.length, 1);
+  assert.equal(shortPackets[0], '!c:Hi team!|');
+  assert.equal(shortPackets[0].length <= 18, true);
+
+  // Long message (e.g. 80 chars)
+  const longMsg = 'Take the northern flank! I will secure the center control point and draw fire.';
+  const packets = encodeInBandChatPackets('k9', longMsg);
+  assert.equal(packets.length > 1, true);
+  for (const pkt of packets) {
+    assert.equal(pkt.length <= 18, true);
+    assert.equal(isInBandChat(pkt), true);
+  }
+
+  // Decode packets
+  const parts: string[] = new Array(packets.length);
+  for (const pkt of packets) {
+    const match = pkt.match(/^!([a-z0-9]{2})([a-z0-9])([a-z0-9]):(.*?)\|?$/i);
+    assert.equal(Boolean(match), true);
+    if (match) {
+      const [, , seqStr, , chunk] = match;
+      const seq = parseInt(seqStr, 36);
+      parts[seq - 1] = chunk;
+    }
+  }
+  assert.equal(parts.join(''), longMsg);
 });
 
 

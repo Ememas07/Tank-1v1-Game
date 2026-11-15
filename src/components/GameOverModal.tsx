@@ -1,6 +1,7 @@
 import React from 'react';
 import { CheckCircle2, Home, RotateCcw } from 'lucide-react';
 import { PAINT_PALETTES } from '../game/customization';
+import { cleanPlayerName } from '../game/sync';
 import type { GameSnapshot, PlayerId, RoomPlayerInfo, TankState } from '../game/types';
 
 interface GameOverModalProps {
@@ -42,7 +43,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
     const winTank = snapshot.activePlayerIds
       .map((id) => snapshot.tanks[id])
       .find((t) => t && t.teamId === snapshot.winnerTeamId);
-    return winTank?.name ?? `Commander ${snapshot.winnerTeamId}`;
+    return cleanPlayerName(winTank?.name) || (snapshot.winnerTeamId ? `Commander ${snapshot.winnerTeamId}` : null);
   })();
 
   return (
@@ -87,7 +88,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                     style={{ backgroundColor: PAINT_PALETTES[t.loadout.paint].primary }}
                   />
                   <span className="font-semibold text-zinc-200">
-                    {t.name}
+                    {cleanPlayerName(t.name) || `Commander ${id}`}
                     {id === localPlayerId ? ' (You)' : ''}
                     {snapshot.format === '2v2' ? (
                       <span className="ml-1.5 text-[10px] text-zinc-400">
@@ -139,7 +140,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                       }`}
                     >
                       <CheckCircle2 className="h-3 w-3" />
-                      {rp.name}
+                      {cleanPlayerName(rp.name) || `Commander ${rp.id}`}
                       {rp.id === localPlayerId ? ' (You)' : ''}
                     </span>
                   );
